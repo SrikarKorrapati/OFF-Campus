@@ -21,6 +21,8 @@ def seed_company_portals(database: Path = DATABASE, *, seed_file: Path = SEED_FI
         required = {"company_name", "career_page_url", "reported_ctc_lpa"}
         if not required <= headers or not headers & {"salary_source", "salary_source_url"}:
             raise ValueError("Seed requires company_name, career_page_url, reported_ctc_lpa and a salary source")
+        if "salary_source" in headers and not {"engineering_role", "role_source"} <= headers:
+            raise ValueError("The shortlist requires engineering_role and role_source")
         companies = list(reader)
 
     seen = set()
@@ -29,6 +31,9 @@ def seed_company_portals(database: Path = DATABASE, *, seed_file: Path = SEED_FI
         if not name or name != normalize_name(name) or name in EXCLUDED or name in seen:
             raise ValueError(f"Invalid, excluded or duplicate company: {name}")
         seen.add(name)
+        if "engineering_role" in headers:
+            if not all((company.get(field) or "").strip() for field in ("engineering_role", "role_source")):
+                raise ValueError(f"Missing India software, AI or embedded software role evidence for {name}")
         if company.get("yc_profile_url"):
             profile = urlsplit(company["yc_profile_url"])
             if (profile.hostname != "www.ycombinator.com" or not profile.path.startswith("/companies/")

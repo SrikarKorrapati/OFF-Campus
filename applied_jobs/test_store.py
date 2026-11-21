@@ -89,6 +89,18 @@ class TrackerTest(unittest.TestCase):
             self.assertEqual(con.execute("SELECT company_name, career_page_url FROM applications").fetchone(),
                              ("EXAMPLE", None))
 
+    def test_current_seed_requires_role_evidence_before_importing(self):
+        sample = self.db.with_suffix(".csv")
+        sample.write_text(
+            "company_name,career_page_url,reported_ctc_lpa,salary_source,engineering_role,role_source\n"
+            "FIRST,,18,Graduate offer,Software Engineer,Campus report\n"
+            "SECOND,,20,Graduate offer,Software Engineer,\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "role evidence for SECOND"):
+            seed.seed_company_portals(self.db, seed_file=sample)
+        self.assertFalse(self.db.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
