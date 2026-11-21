@@ -1,4 +1,4 @@
-"""Small local SQLite store for company portals and job applications."""
+"""Track company portals and job applications in one SQLite table."""
 
 from __future__ import annotations
 
@@ -9,58 +9,34 @@ from collections.abc import Iterable
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import Any
+
+if __package__:
+    from . import migrations
+else:
+    import migrations
 
 
 DIRECTORY = Path(__file__).resolve().parent
 DATABASE = DIRECTORY / "applications.sqlite3"
 SCHEMA = DIRECTORY / "schema.sql"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = migrations.SCHEMA_VERSION
+
+
+def initialize(database: Path = DATABASE) -> Path:
+    return migrations.initialize(database, SCHEMA)
 
 
 @contextmanager
-def _read_database(database: Path):
-    """Read an existing database as-is. A new tracker has empty in-memory history."""
-    if database.is_file() and database.stat().st_size:
-        connection = sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True)
-    else:
-        connection = sqlite3.connect(":memory:")
-        connection.executescript(SCHEMA.read_text(encoding="utf-8"))
-    with closing(connection):
-        connection.execute("PRAGMA query_only = ON")
+def _write(database: Path):
+    initialize(database)
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("BEGIN IMMEDIATE")
         yield connection
 
 
-@contextmanager
-def _read_history(database: Path):
-    with _read_database(database) as source:
-        source.execute("BEGIN")
-        columns = [row[1] for row in source.execute("PRAGMA table_info(applications)")]
-        if "status" in columns or "job_id" not in columns:
-            yield source
-            return
-
-        # Expose the new fields on old databases without changing their files or backups.
-        with closing(sqlite3.connect(":memory:")) as snapshot:
-            source.backup(snapshot)
-            source.rollback()
-            _add_status_columns(snapshot, columns)
-            snapshot.execute("PRAGMA query_only = ON")
-            yield snapshot
-
-
-def _back_up_database(database: Path) -> None:
-    """Keep a complete, uniquely named snapshot before replacing a legacy table."""
-    with NamedTemporaryFile(dir=database.parent, prefix=f"{database.name}.pre-migration-",
-                            suffix=".sqlite3", delete=False) as backup:
-        path = Path(backup.name)
-    try:
-        with _read_database(database) as source, closing(sqlite3.connect(path)) as target:
-            source.backup(target)
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def normalize_name(name: str) -> str:
@@ -98,8 +74,7 @@ def add_company_portals(
 ) -> None:
     """Import company rows in one transaction. New or changed links start unchecked."""
     values = [_company_portal_values(name, url) for name, url in companies]
-    initialize(database)
-    with closing(sqlite3.connect(database)) as connection, connection:
+    with _write(database) as connection:
         connection.executemany(
             """
             INSERT INTO applications (
@@ -130,11 +105,8 @@ def record_company_portal_check(
     if not company_name:
         raise ValueError("company_name is required")
     encoded_notes = _encode_status_notes(status_notes)
-    checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace(
-        "+00:00", "Z"
-    )
-    initialize(database)
-    with closing(sqlite3.connect(database)) as connection, connection:
+    checked_at = _utc_now()
+    with _write(database) as connection:
         result = connection.execute(
             """
             UPDATE applications
@@ -147,109 +119,6 @@ def record_company_portal_check(
         if result.rowcount == 0:
             raise ValueError("Add the company's careers page before recording a check")
     return checked_at
-
-
-def _backfill_statuses(connection: sqlite3.Connection, *, has_check_time: bool = True) -> None:
-    checked = "WHEN NULLIF(last_checked_at, '') IS NOT NULL THEN 'checked'" if has_check_time else ""
-    connection.execute(f"""
-        UPDATE applications SET status = CASE
-            WHEN job_id IS NOT NULL THEN 'applied'
-            {checked}
-            ELSE 'not_checked'
-        END
-    """)
-
-
-def _add_status_columns(connection: sqlite3.Connection, old_columns: Iterable[str]) -> None:
-    connection.execute("""
-        ALTER TABLE applications ADD COLUMN status TEXT NOT NULL DEFAULT 'not_checked'
-            CHECK (status IN ('not_checked', 'checked', 'applied', 'failed_to_apply'))
-    """)
-    # Existing job rows need their outcome before SQLite validates the row-kind check.
-    _backfill_statuses(connection, has_check_time="last_checked_at" in old_columns)
-    # SQLite disallows subqueries in CHECK constraints. Check each possible bullet.
-    note_values = [f"json_extract(status_notes_json, '$[{i}]')" for i in range(5)]
-    bullets = " AND ".join(
-        f"coalesce(json_type(status_notes_json, '$[{i}]') = 'text' "
-        f"AND trim({value}, char(9, 32)) <> '', 1)"
-        for i, value in enumerate(note_values)
-    )
-    connection.execute(f"""
-        ALTER TABLE applications ADD COLUMN status_notes_json TEXT NOT NULL DEFAULT '[]'
-            CHECK (CASE WHEN json_valid(status_notes_json) THEN
-                (job_id IS NULL) = (status IN ('not_checked', 'checked'))
-                AND json_type(status_notes_json) = 'array'
-                AND json_array_length(status_notes_json) BETWEEN (status = 'failed_to_apply') AND 5
-                AND {bullets}
-                AND printf('%s%s%s%s%s', {', '.join(note_values)})
-                    NOT GLOB ('*[' || char(10, 11, 12, 13, 28, 29, 30, 133, 8232, 8233) || ']*')
-            ELSE 0 END)
-    """)
-
-
-def initialize(database: Path = DATABASE) -> Path:
-    """Install the single-table schema, upgrading earlier layouts atomically."""
-    database.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(database)) as connection, connection:
-        connection.execute("BEGIN IMMEDIATE")
-        version = connection.execute("PRAGMA user_version").fetchone()[0]
-        if version == SCHEMA_VERSION:
-            return database
-        if version > SCHEMA_VERSION:
-            raise ValueError("This database uses a newer application schema")
-        old_columns = [r[1] for r in connection.execute("PRAGMA table_info(applications)")]
-        old_portals = list(connection.execute("PRAGMA table_info(company_portal_checks)"))
-        if old_columns or old_portals:
-            _back_up_database(database)
-        if version == 2:
-            _add_status_columns(connection, old_columns)
-            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-            return database
-        if old_columns:
-            connection.execute("ALTER TABLE applications RENAME TO previous_applications")
-            connection.execute("DROP INDEX IF EXISTS applications_company_portal_unique")
-
-        # executescript would commit the open migration before running the DDL.
-        for statement in SCHEMA.read_text(encoding="utf-8").split(";"):
-            if statement.strip():
-                connection.execute(statement)
-
-        if old_columns:
-            # Preserve the public application ID and its underlying rowid on submitted jobs.
-            job_fields = ["application_id", "company_name", "job_id", "job_name",
-                          "job_link", "source_portal_url", "applied_at", "questions_answers_json",
-                          "career_page_url", "last_checked_at"]
-            available = [c for c in job_fields if c in old_columns or c == "application_id"]
-            fields = ", ".join(available)
-            values = {c: c for c in available}
-            values["application_id"] = ("COALESCE(application_id, rowid)" if "application_id" in old_columns
-                                        else "rowid")
-            for c in ("career_page_url", "last_checked_at"):
-                if c in values:
-                    values[c] = f"NULLIF({c}, '')"
-            connection.execute(
-                f"INSERT INTO applications (rowid, {fields}, status) "
-                f"SELECT rowid, {', '.join(values.values())}, 'applied' "
-                "FROM previous_applications WHERE job_id IS NOT NULL"
-            )
-
-        for table in ("previous_applications", "company_portal_checks"):
-            columns = {r[1] for r in connection.execute(f"PRAGMA table_info({table})")}
-            if not columns:
-                continue
-            fields = ["company_name"]
-            fields.extend(c for c in ("career_page_url", "last_checked_at") if c in columns)
-            projection = ", ".join(fields)
-            values = ", ".join(f"NULLIF({c}, '')" if c != "company_name" else c for c in fields)
-            condition = " WHERE job_id IS NULL" if "job_id" in columns else ""
-            connection.execute(
-                f"INSERT INTO applications ({projection}) SELECT {values} FROM {table}{condition}"
-            )
-            connection.execute(f"DROP TABLE {table}")
-        if old_columns or old_portals:
-            _backfill_statuses(connection)
-        connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-    return database
 
 
 def save_application(
@@ -287,40 +156,39 @@ def save_application(
     encoded_notes = _encode_status_notes(status_notes)
     if status == "failed_to_apply" and not status_notes:
         raise ValueError("A failed attempt requires at least one reason in status_notes")
-    encoded_answers = json.dumps(questions_answers, ensure_ascii=False)
-    applied_at = None
-    if status == "applied":
-        applied_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-    initialize(database)
-    with closing(sqlite3.connect(database)) as connection, connection:
-        connection.execute("BEGIN IMMEDIATE")
-        row = connection.execute(
-            """
-            INSERT INTO applications (
-                application_id, company_name, job_id, job_name, job_link,
-                source_portal_url, applied_at, questions_answers_json, status, status_notes_json
-            ) VALUES ((SELECT COALESCE(MAX(application_id), 0) + 1 FROM applications),
-                      :company, :job_id, :name, :link, :source, :applied_at, :answers, :status, COALESCE(:notes, '[]'))
-            ON CONFLICT (company_name, job_id) DO UPDATE SET
-                job_name = excluded.job_name,
-                job_link = excluded.job_link,
-                source_portal_url = excluded.source_portal_url,
-                questions_answers_json = excluded.questions_answers_json,
-                applied_at = CASE WHEN applications.status = 'applied'
-                                  THEN applications.applied_at ELSE excluded.applied_at END,
-                status = excluded.status,
-                status_notes_json = COALESCE(:notes, CASE WHEN applications.status = excluded.status
-                                                          THEN applications.status_notes_json ELSE '[]' END)
-            WHERE applications.status <> 'applied' OR excluded.status = 'applied'
-            RETURNING application_id
-            """,
-            {"company": company_name, "job_id": job_id, "name": job_name, "link": job_link,
-             "source": source_portal_url, "applied_at": applied_at, "answers": encoded_answers,
-             "status": status, "notes": encoded_notes},
+    values = {
+        "company": company_name, "job_id": job_id, "name": job_name, "link": job_link,
+        "source": source_portal_url, "answers": json.dumps(questions_answers, ensure_ascii=False),
+        "status": status, "notes": encoded_notes or "[]",
+        "applied_at": _utc_now() if status == "applied" else None,
+    }
+    with _write(database) as connection:
+        previous = connection.execute(
+            "SELECT application_id, status, applied_at, status_notes_json FROM applications "
+            "WHERE company_name = :company AND job_id = :job_id", values,
         ).fetchone()
-        if row is None:
-            raise ValueError("This application is already confirmed and cannot be marked failed")
-    return int(row[0])
+        if previous is None:
+            return connection.execute("""
+                INSERT INTO applications (application_id, company_name, job_id, job_name, job_link,
+                    source_portal_url, questions_answers_json, status, status_notes_json, applied_at)
+                VALUES ((SELECT coalesce(max(application_id), 0) + 1 FROM applications),
+                    :company, :job_id, :name, :link, :source, :answers, :status, :notes, :applied_at)
+                RETURNING application_id
+            """, values).fetchone()[0]
+
+        application_id, old_status, submitted_at, old_notes = previous
+        if old_status == "applied":
+            if status == "failed_to_apply":
+                raise ValueError("This application is already confirmed and cannot be marked failed")
+            values["applied_at"] = submitted_at
+        if status == old_status and status_notes is None:
+            values["notes"] = old_notes
+        connection.execute("""
+            UPDATE applications SET job_name = :name, job_link = :link, source_portal_url = :source,
+                questions_answers_json = :answers, status = :status, status_notes_json = :notes,
+                applied_at = :applied_at WHERE company_name = :company AND job_id = :job_id
+        """, values)
+        return application_id
 
 
 def list_applied_jobs_for_company(
@@ -330,29 +198,14 @@ def list_applied_jobs_for_company(
     company = normalize_name(company)
     if not company:
         raise ValueError("company is required")
-    with _read_history(database) as connection:
-        columns = {r[1] for r in connection.execute("PRAGMA table_info(applications)")}
-        source = "source_portal_url" if "source_portal_url" in columns else "NULL"
-        time = "applied_at" if "applied_at" in columns else "NULL"
-        rows = connection.execute(
-            f"""
-            SELECT job_name, job_id, job_link, {source}, {time}
-            FROM applications
-            WHERE company_name = ? AND job_id IS NOT NULL AND status = 'applied'
+    with migrations.read_history(database, SCHEMA) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute("""
+            SELECT job_name, job_id, job_link, source_portal_url, applied_at FROM applications
+            WHERE company_name = ? AND status = 'applied' AND job_id IS NOT NULL
             ORDER BY job_name, job_id
-            """,
-            (company,),
-        ).fetchall()
-    return [
-        {
-            "job_name": row[0],
-            "job_id": row[1],
-            "job_link": row[2],
-            "source_portal_url": row[3],
-            "applied_at": row[4],
-        }
-        for row in rows
-    ]
+        """, (company,))
+        return [dict(row) for row in rows]
 
 
 def check_job_application_status(
@@ -370,7 +223,7 @@ def check_job_application_status(
             raise ValueError("company_name is required")
         sql += " AND company_name = ?"
         parameters.append(company_name)
-    with _read_history(database) as connection:
+    with migrations.read_history(database, SCHEMA) as connection:
         rows = connection.execute(sql + " LIMIT 2", parameters).fetchall()
     if len(rows) > 1:
         raise ValueError("Multiple employers use this job_id. Supply company_name.")
@@ -390,7 +243,7 @@ def query_the_schema(
         raise ValueError("sql_query must be one read-only SELECT, WITH, PRAGMA, or EXPLAIN query")
 
     try:
-        with _read_history(database) as connection:
+        with migrations.read_history(database, SCHEMA) as connection:
             cursor = connection.execute(sql_query)
             if cursor.description is None:
                 raise ValueError("sql_query must return rows")
@@ -411,19 +264,16 @@ TOOL_DEFINITIONS = [
     {
         "name": "query_the_schema",
         "description": (
-            "Query local application history with one read-only SQLite statement. "
-            "Returns columns and rows, with each row keyed by column name. "
-            "Company rows have a NULL job_id and status 'not_checked' or 'checked'. "
-            "Job attempts have status 'applied' or 'failed_to_apply'. Filter on "
-            "status = 'applied' when counting submissions or checking for duplicates. "
-            "status_notes_json is a JSON array of up to five brief notes about the status. "
-            "To identify a specific application, match both "
-            "company_name and job_id because employers can reuse requisition IDs. "
-            "Company and job names are uppercase with underscores between words. "
-            "applied_at is the submission time in ISO 8601 UTC. last_checked_at is "
-            "the time of the last careers page check. questions_answers_json is an "
-            "array of objects with question and answer fields.\n\n"
-            + SCHEMA.read_text(encoding="utf-8").strip()
+            "Run one read-only SQLite query and return the columns and rows. "
+            "CREATE TABLE applications (company_name TEXT, career_page_url TEXT, last_checked_at TEXT, "
+            "application_id INTEGER, job_id TEXT, job_name TEXT, job_link TEXT, source_portal_url TEXT, "
+            "applied_at TEXT, questions_answers_json TEXT, status TEXT, status_notes_json TEXT). "
+            "Company rows have NULL job_id and status 'not_checked' or 'checked'. "
+            "Job attempts are keyed by company_name and job_id. Count confirmed submissions with "
+            "status = 'applied'. A failed attempt is 'failed_to_apply'. Names are uppercase with "
+            "underscores. Timestamps are ISO 8601 UTC. career_page_url is the employer's portal, "
+            "job_link is the opening, and source_portal_url is where it was found. "
+            "The JSON lists hold question/answer objects and up to five status notes, respectively."
         ),
         "parameters": {
             "type": "object",
