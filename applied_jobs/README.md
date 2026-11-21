@@ -18,10 +18,12 @@ The SQLite `applications` table stores two kinds of rows. Both timestamps use IS
 
 | Row | Contents |
 | --- | --- |
-| Company | Start with the normalized `company_name` and the employer's `career_page_url` when known. All other fields start as NULL. A portal check sets `last_checked_at`. |
-| Submission | `company_name` and `job_id` together identify the opening. Store the job title, listing URL, `source_portal_url` where it was found, `applied_at`, and application questions and answers. |
+| Company | Start with the normalized `company_name`, the known `career_page_url`, and status `not_checked`. Checking the portal sets `last_checked_at` and status `checked`. |
+| Job attempt | `company_name` and `job_id` identify the opening. Keep the job title, listing URL, discovery URL, questions, and answers. A confirmed submission gets status `applied` and a submission time in `applied_at`. A failed attempt gets `failed_to_apply` and no submission time. |
 
-Use `query_the_schema(sql_query)` for read-only history lookups and `save_application` to record a confirmed submission. The first write to a legacy database saves a full backup, including legacy portal names, alongside it as `applications.sqlite3.pre-migration-*.sqlite3`.
+Use `query_the_schema(sql_query)` for history. Filter by `status = 'applied'` to count submissions. `save_application` defaults to `applied`. For a failed attempt, pass `status="failed_to_apply"` and a reason such as `status_notes=["Portal closed before submission."]`. The `status_notes_json` column holds up to five concise, single-line bullets. Notes are optional for a confirmed submission and can include a confirmation reference or next step.
+
+The first write to a legacy database saves a full backup, including legacy portal names, alongside it as `applications.sqlite3.pre-migration-*.sqlite3`.
 
 ## Question workflow
 

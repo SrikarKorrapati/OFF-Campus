@@ -16,13 +16,15 @@ class HistoryToolTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             database = store.initialize(Path(directory) / "applications.sqlite3")
             with closing(sqlite3.connect(database)) as connection, connection:
-                connection.execute(
-                    "INSERT INTO applications (company_name, job_id, applied_at) VALUES (?, ?, ?)",
-                    ("ACME", "R1", "2025-09-01T10:00:00Z"),
+                connection.executemany(
+                    "INSERT INTO applications (company_name, job_id, applied_at, status, status_notes_json) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    [("ACME", "R1", "2025-09-01T10:00:00Z", "applied", "[]"),
+                     ("ACME", "R2", None, "failed_to_apply", '["Portal closed"]')],
                 )
             result = query(
                 sql_query="SELECT job_id, applied_at FROM applications "
-                          "WHERE company_name = 'ACME' AND job_id IS NOT NULL",
+                          "WHERE company_name = 'ACME' AND status = 'applied'",
                 database=database,
             )
             self.assertEqual(result, {
