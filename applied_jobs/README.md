@@ -1,21 +1,30 @@
-# Company shortlist and application history
+# Company shortlist and application tracker
 
-From the project root, run `python3 applied_jobs/seed_company_portals.py` to load [the shortlist](company_seed.csv). Running it again preserves submitted applications and the last check time for unchanged careers URLs.
+## Shortlist employers
 
-The SQLite database has one table, `applications`.
+Add each employer once to the [shortlist CSV](company_seed.csv). Select private-sector teams that build their own products, infrastructure, or technology. Exclude services-led consultancies, outsourced engineering or staffing companies, and government or public-sector undertakings.
 
-| Row | Values |
+| Employer | Evidence to record |
 | --- | --- |
-| New company | `company_name` and, when known, `career_page_url`. Every other column starts as SQL NULL. |
-| Checked company | `last_checked_at` records when its careers page was checked. |
-| Submitted application | The employer and its `job_id` identify the application. The row holds the job title, listing URL, discovery portal URL, submission time and answers. |
+| All | Record an India-based software, AI, embedded, forward-deployed, or related hands-on engineering role in `engineering_role` and its source in `role_source`. |
+| Non-YC | Reported India graduate or entry-level technical compensation above ₹15 LPA total CTC in `reported_ctc_lpa`, with a plain-text reference in `salary_source`. |
+| YC-backed | The YC profile, Indian office location, and source for that location. YC employers qualify without a company-level pay cutoff. |
 
-`career_page_url` points to the employer's careers page or its hiring board. `source_portal_url` records where a particular opening was discovered. Both timestamps use ISO 8601 UTC text, such as `2026-11-21T14:30:00Z`.
+After each verified batch, run `python3 applied_jobs/seed_company_portals.py` from the project root. Rerunning preserves submissions and check times for unchanged careers URLs. Verify eligibility and pay for each opening before applying.
 
-The agent uses one read-only SQLite tool, `query_the_schema(sql_query)`, for application dates, job IDs, and duplicate checks. Before submitting, query by both `company_name` and `job_id` because employers can reuse requisition IDs. The submission workflow calls `save_application` after the portal confirms success.
+## Application records
 
-To run the question workflow, place your own `personal_details.md`, `candidate_profile.md`, `technical_details.md`, and `job_requirements.md` in `docs/` and pass a configured chat model to `build_question_graph` in `question_graph.py`.
+The SQLite `applications` table stores two kinds of rows. Both timestamps use ISO 8601 UTC.
 
-On the first write to an older layout, the tracker saves a complete local SQLite backup beside the database as `applications.sqlite3.pre-migration-*.sqlite3`. The backup retains legacy portal names.
+| Row | Contents |
+| --- | --- |
+| Company | Start with the normalized `company_name` and the employer's `career_page_url` when known. All other fields start as NULL. A portal check sets `last_checked_at`. |
+| Submission | `company_name` and `job_id` together identify the opening. Store the job title, listing URL, `source_portal_url` where it was found, `applied_at`, and application questions and answers. |
 
-Update the CSV as each batch of employers is verified, then rerun the seed command. For every employer, record an India software, AI or embedded software role in `engineering_role` and its evidence in `role_source`. For non-YC companies, record reported India graduate or entry-level technical compensation above ₹15 LPA and a plain-text source. These figures can reflect individual offers, campus packages or entry-level pay ranges. For YC-backed companies, record the YC profile and evidence of an Indian location. They have no pay cutoff. Check the portal for an active opening and verify that role's eligibility and compensation before applying.
+Use `query_the_schema(sql_query)` for read-only history lookups and `save_application` to record a confirmed submission. The first write to a legacy database saves a full backup, including legacy portal names, alongside it as `applications.sqlite3.pre-migration-*.sqlite3`.
+
+## Question workflow
+
+Keep identity, education, experience, skills, and project details in `docs/candidate_profile.md`. Keep availability and compensation preferences in `docs/job_requirements.md`. Pass a configured chat model to `build_question_graph` in [question_graph.py](../question_graph.py).
+
+To migrate a split profile, move the contents of `personal_details.md` and `technical_details.md` into the candidate profile under `## Personal Details` and `## Technical Details`. The loader uses each old file until its corresponding heading is present.
