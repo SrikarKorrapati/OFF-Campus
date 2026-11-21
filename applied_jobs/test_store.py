@@ -1,0 +1,94 @@
+import csv
+import sqlite3
+import tempfile
+import unittest
+from pathlib import Path
+
+from applied_jobs import seed_company_portals as seed
+from applied_jobs import store
+
+
+class TrackerTest(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.db = Path(directory.name) / "applications.sqlite3"
+
+    def make_legacy_tracker(self):
+        with sqlite3.connect(self.db) as con:
+            con.executescript("""
+                CREATE TABLE applications (
+                    application_id INTEGER PRIMARY KEY, company_name TEXT, career_page_url TEXT,
+                    portal_name TEXT, last_checked_at TEXT, job_id TEXT UNIQUE, job_name TEXT,
+                    job_link TEXT, source_portal_url TEXT, applied_at TEXT, questions_answers_json TEXT
+                );
+                INSERT INTO applications VALUES
+                    (1, 'ACME', 'https://acme.test/jobs', 'Acme via ATS', NULL,
+                     NULL, '', '', '', '', '[]'),
+                    (7, 'ACME', NULL, NULL, NULL, 'R1', 'DEV', 'link', 'source',
+                     '2025-09-01T10:00:00Z', '[]');
+            """)
+
+    def test_history_reads_preserve_legacy_database_and_labels(self):
+        self.make_legacy_tracker()
+        before = self.db.read_bytes()
+        self.assertTrue(store.check_job_application_status("R1", company_name="acme", database=self.db)["applied"])
+        self.assertEqual(len(store.list_applied_jobs_for_company("acme", database=self.db)), 1)
+        result = store.query_the_schema("SELECT portal_name FROM applications WHERE job_id IS NULL", database=self.db)
+        self.assertEqual(result["rows"], [{"portal_name": "Acme via ATS"}])
+        self.assertEqual(self.db.read_bytes(), before)
+        self.assertEqual(list(self.db.parent.iterdir()), [self.db])
+
+    def test_migration_backs_up_legacy_labels_and_keeps_application(self):
+        self.make_legacy_tracker()
+        store.initialize(self.db)
+        store.initialize(self.db)
+        backup, = self.db.parent.glob("*.pre-migration-*.sqlite3")
+        with sqlite3.connect(backup) as con:
+            self.assertEqual(con.execute("SELECT portal_name FROM applications WHERE job_id IS NULL").fetchone()[0],
+                             "Acme via ATS")
+        with sqlite3.connect(self.db) as con:
+            row = con.execute("SELECT * FROM applications WHERE job_id IS NULL").fetchone()
+            self.assertEqual(row[:2], ("ACME", "https://acme.test/jobs"))
+            self.assertTrue(all(v is None for v in row[2:]))
+            job = con.execute("SELECT application_id, applied_at, questions_answers_json FROM applications WHERE job_id = 'R1'")
+            self.assertEqual(job.fetchone(), (7, "2025-09-01T10:00:00Z", "[]"))
+
+    def test_employers_can_reuse_an_id_and_retry_without_a_new_application(self):
+        def save(name, link):
+            return store.save_application(name, "42", [], job_name="Software Engineer",
+                                          job_link=link, source_portal_url="source", database=self.db)
+
+        first = save("Acme Labs", "first")
+        self.assertFalse(store.check_job_application_status("42", company_name="Beta", database=self.db)["applied"])
+        second = save("Beta", "second")
+        self.assertNotEqual(first, second)
+        self.assertEqual(first, save("acme labs", "updated"))
+        for name, link in [("Acme Labs", "updated"), ("Beta", "second")]:
+            self.assertEqual(store.check_job_application_status("42", company_name=name, database=self.db),
+                             {"applied": True, "job_link": link})
+        with self.assertRaisesRegex(ValueError, "company_name"):
+            store.check_job_application_status("42", database=self.db)
+
+    def test_supplied_csv_seeds_fresh_database_and_is_repeatable(self):
+        with seed.SEED_FILE.open(newline="", encoding="utf-8") as f:
+            count = len(list(csv.DictReader(f)))
+        self.assertEqual(seed.seed_company_portals(self.db), count)
+        self.assertEqual(seed.seed_company_portals(self.db), count)
+        with sqlite3.connect(self.db) as con:
+            rows = con.execute("SELECT * FROM applications").fetchall()
+            self.assertEqual(len({r[0] for r in rows}), count)
+            self.assertTrue(all(v is None for row in rows for v in row[2:]))
+
+    def test_legacy_seed_headers(self):
+        old = self.db.with_suffix(".csv")
+        old.write_text("company_name,career_page_url,portal_name,reported_ctc_lpa,salary_source_url\n"
+                       "EXAMPLE,,,16,https://example.test/report\n", encoding="utf-8")
+        self.assertEqual(seed.seed_company_portals(self.db, seed_file=old), 1)
+        with sqlite3.connect(self.db) as con:
+            self.assertEqual(con.execute("SELECT company_name, career_page_url FROM applications").fetchone(),
+                             ("EXAMPLE", None))
+
+
+if __name__ == "__main__":
+    unittest.main()
