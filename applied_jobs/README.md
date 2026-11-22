@@ -1,16 +1,6 @@
 # Company shortlist and application tracker
 
-## Shortlist employers
-
-Keep the shortlist in `applied_jobs/company_seed.csv` on your machine. Git ignores seed CSVs. Add each employer once. Select private-sector teams that build their own products, infrastructure, or technology. Exclude services-led consultancies, outsourced engineering or staffing companies, and government or public-sector undertakings.
-
-| Employer | Evidence to record |
-| --- | --- |
-| All | Record an India-based software, AI, embedded, forward-deployed, or related hands-on engineering role in `engineering_role` and its source in `role_source`. |
-| Non-YC | Reported India graduate or entry-level technical compensation above ₹15 LPA total CTC in `reported_ctc_lpa`, with a plain-text reference in `salary_source`. |
-| YC-backed | The YC profile, Indian office location, and source for that location. YC employers qualify without a company-level pay cutoff. |
-
-Register each verified employer with `add_company_portal(company_name, career_page_url)` in `applied_jobs.store`. Verify eligibility and pay for each opening before applying.
+Employer shortlist criteria and registration instructions are in `docs/general_instructions.md`.
 
 ## Application records
 
@@ -23,7 +13,7 @@ The SQLite `applications` table stores two kinds of rows. Both timestamps use IS
 
 Use `query_the_schema(sql_query)` for history. Filter by `status = 'applied'` to count submissions. `save_application` defaults to `applied`. For a failed attempt, pass `status="failed_to_apply"` and a reason such as `status_notes=["Portal closed before submission."]`. The `status_notes_json` column holds up to five concise, single-line bullets. Notes are optional for a confirmed submission and can include a confirmation reference or next step.
 
-The first write to a legacy database saves a full backup, including legacy portal names, alongside it as `applications.sqlite3.pre-migration-*.sqlite3`.
+The tracker creates the table on first write and uses schema version 4.
 
 ## Question workflow
 

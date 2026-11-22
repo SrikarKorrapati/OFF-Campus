@@ -10,20 +10,39 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-if __package__:
-    from . import migrations
-else:
-    import migrations
-
-
 DIRECTORY = Path(__file__).resolve().parent
 DATABASE = DIRECTORY / "applications.sqlite3"
 SCHEMA = DIRECTORY / "schema.sql"
-SCHEMA_VERSION = migrations.SCHEMA_VERSION
+SCHEMA_VERSION = 4
 
 
 def initialize(database: Path = DATABASE) -> Path:
-    return migrations.initialize(database, SCHEMA)
+    """Create an empty tracker or use an existing tracker with the current schema."""
+    database.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(database)) as connection, connection:
+        version, has_tables = connection.execute(
+            "SELECT user_version, EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table') "
+            "FROM pragma_user_version"
+        ).fetchone()
+        if version == SCHEMA_VERSION:
+            return database
+        if version or has_tables:
+            raise ValueError(f"Unsupported tracker schema version {version}. Expected {SCHEMA_VERSION}.")
+        schema = SCHEMA.read_text(encoding="utf-8")
+        connection.executescript(f"BEGIN IMMEDIATE;\n{schema}\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;")
+    return database
+
+
+@contextmanager
+def _read_history(database: Path):
+    """Open the tracker read-only, using empty in-memory history before the first write."""
+    exists = database.is_file() and database.stat().st_size > 0
+    location = f"{database.resolve().as_uri()}?mode=ro" if exists else ":memory:"
+    with closing(sqlite3.connect(location, uri=True)) as connection:
+        if not exists:
+            connection.executescript(SCHEMA.read_text(encoding="utf-8"))
+        connection.execute("PRAGMA query_only = ON")
+        yield connection
 
 
 @contextmanager
@@ -188,7 +207,7 @@ def query_the_schema(
         raise ValueError("sql_query must be one read-only SELECT, WITH, PRAGMA, or EXPLAIN query")
 
     try:
-        with migrations.read_history(database, SCHEMA) as connection:
+        with _read_history(database) as connection:
             cursor = connection.execute(sql_query)
             if cursor.description is None:
                 raise ValueError("sql_query must return rows")
