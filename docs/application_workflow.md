@@ -14,9 +14,9 @@ WHERE job_id IS NULL
 ORDER BY last_checked_at, company_name;
 ```
 
-1. Visit each selected employer’s official careers page, queuing companies as worker slots fill. If the URL is missing or points to the wrong employer, find the careers page through the employer’s website and save it with `add_company_portal(company_name, career_page_url)`. If the page cannot be verified or accessed, report the company and keep it due.
+1. Visit each selected employer’s official careers page, queuing companies as worker slots fill. If the URL is missing or points to the wrong employer, find the careers page through the employer’s website and use the verified link for this scan. If the page cannot be verified or accessed, report the company and keep it due.
 2. Check all active openings on that page against the job requirements. In application mode, call `claim_job(company_name, job_id)` for each eligible opening. Only the worker that claims it proceeds with the application steps below. Save the careers page as the discovery source and the individual opening URL as `job_link`.
-3. After a full company scan in application mode, call `record_company_portal_check(company_name)` once, including when there are zero matches. A scan is complete when every opening was applied to, already applied to, closed or ruled ineligible. Keep the previous timestamp for blocked or unresolved work. Wait for every selected company worker to finish or report a blocker before starting the job portals.
+3. After a full company scan in application mode, save any new or corrected careers URL with `add_company_portal(company_name, career_page_url)`, then call `record_company_portal_check(company_name)` once. Do this even for zero matches. A scan is complete when every opening was applied to, already applied to, closed or ruled ineligible. Keep the previous timestamp for blocked or unresolved work. Wait for every selected company worker to finish or report a blocker before starting the job portals.
 
 ## Daily portal scan
 
@@ -39,7 +39,7 @@ Select private-sector employers with in-house engineering teams that build their
 
 ## Find and verify openings
 
-1. Search for active private-sector openings in India that offer a six-month internship or a full-time role. Apply the location, availability, pay, employer exclusions, and approved exceptions in `docs/job_requirements.md`. [Job portals](job_sources.md)
+1. Verify that each opening is an active private-sector role in India offering a six-month internship or full-time employment. Apply the location, availability, pay, employer exclusions, and approved exceptions in `docs/job_requirements.md`. [Job portals](job_sources.md)
 2. Add each verified employer once to the local `job_tracker/company_shortlist.csv` and register it with `add_company_portal(company_name, career_page_url)` from `job_tracker.database`. Use uppercase company names with underscores between words. Leave the careers URL blank if unknown. Git ignores seed CSVs.
 3. Confirm the opening on the employer's careers page before sharing personal information or applying. Verify eligibility and pay for that opening.
 
