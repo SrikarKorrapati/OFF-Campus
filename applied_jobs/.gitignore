@@ -1,4 +1,5 @@
 applications.sqlite3
+/whatsapp_scan/
 *.sqlite3.*.json
 applications.sqlite3-shm
 applications.sqlite3-wal
