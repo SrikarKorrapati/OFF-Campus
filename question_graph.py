@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Annotated, Callable, Literal, TypedDict
 
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
-from langgraph.graph import END, START, StateGraph, add_messages
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langgraph.graph import START, StateGraph, add_messages
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
@@ -19,8 +19,7 @@ DOCS = Path(__file__).resolve().parent / "docs"
 MAX_ANSWER_ATTEMPTS = 3
 
 
-class PortalQuestionState(TypedDict, total=False):
-    question: str
+class _QuestionUpdates(TypedDict, total=False):
     company: str
     job_id: str
     resume_text: str
@@ -30,6 +29,10 @@ class PortalQuestionState(TypedDict, total=False):
     approved: bool
     feedback: str
     final_answer: str | None
+
+
+class PortalQuestionState(_QuestionUpdates):
+    question: str
 
 
 class Critique(BaseModel):
@@ -51,10 +54,15 @@ def _applicant_context(resume_text: str) -> str:
     )
 
 
-def _run_tools(state: PortalQuestionState) -> PortalQuestionState:
+def _run_tools(state: PortalQuestionState) -> _QuestionUpdates:
+    history = state.get("messages", [])
+    if not history or not isinstance(reply := history[-1], AIMessage):
+        raise ValueError("Expected a tool call from the answer agent")
     replies = []
-    for call in state["messages"][-1].tool_calls:
+    for call in reply.tool_calls:
         name = call["name"]
+        if call["id"] is None:
+            raise ValueError(f"Missing tool call ID for {name}")
         try:
             if name not in TOOL_HANDLERS:
                 raise ValueError(f"Unknown tool: {name}")
@@ -101,9 +109,9 @@ def build_question_graph(model: BaseChatModel, *, fill_input: Callable[[str], No
         })
 
     def critique(state: PortalQuestionState) -> Command[Literal["answer", "__end__"]]:
-        draft = state["draft"]
-        evidence = "\n".join(m.content for m in state["messages"] if isinstance(m, ToolMessage))
-        review = critic.invoke([
+        draft = state.get("draft", "")
+        evidence = "\n".join(m.text for m in state.get("messages", []) if isinstance(m, ToolMessage))
+        review = Critique.model_validate(critic.invoke([
             SystemMessage(
                 "Approve only a direct, field-ready answer supported by the supplied facts or tool results. "
                 "Reject unsupported claims and NEEDS_USER_INPUT. Give a specific correction when rejecting.\n\n"
@@ -114,10 +122,10 @@ def build_question_graph(model: BaseChatModel, *, fill_input: Callable[[str], No
                 f"Question: {state['question']}\nDraft: {draft}\n"
                 f"Application history tool results: {evidence or '(none)'}"
             ),
-        ])
+        ]))
         approved = review.approved and draft not in ("", "NEEDS_USER_INPUT")
-        update: PortalQuestionState = {"approved": approved, "feedback": review.feedback.strip()}
-        if not approved and state["attempts"] < MAX_ANSWER_ATTEMPTS:
+        update: _QuestionUpdates = {"approved": approved, "feedback": review.feedback.strip()}
+        if not approved and state.get("attempts", 0) < MAX_ANSWER_ATTEMPTS:
             update["messages"] = [HumanMessage(
                 f"Revise the same answer using only the supplied facts. Critic feedback: {update['feedback']}"
             )]
@@ -125,7 +133,7 @@ def build_question_graph(model: BaseChatModel, *, fill_input: Callable[[str], No
         update["final_answer"] = draft if approved else None
         if approved and fill_input is not None:
             fill_input(draft)
-        return Command(goto=END, update=update)
+        return Command(goto="__end__", update=update)
 
     graph = StateGraph(PortalQuestionState)
     graph.add_node("answer", answer)
