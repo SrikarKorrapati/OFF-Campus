@@ -10,7 +10,7 @@ Keep the shortlist in `applied_jobs/company_seed.csv` on your machine. Git ignor
 | Non-YC | Reported India graduate or entry-level technical compensation above ₹15 LPA total CTC in `reported_ctc_lpa`, with a plain-text reference in `salary_source`. |
 | YC-backed | The YC profile, Indian office location, and source for that location. YC employers qualify without a company-level pay cutoff. |
 
-After each verified batch, run `python3 applied_jobs/seed_company_portals.py` from the project root. Rerunning preserves submissions and check times for unchanged careers URLs. Verify eligibility and pay for each opening before applying.
+Register each verified employer with `add_company_portal(company_name, career_page_url)` in `applied_jobs.store`. Verify eligibility and pay for each opening before applying.
 
 ## Application records
 
