@@ -19,6 +19,18 @@ Use `query_the_schema(sql_query)` for history. Filter by `status = 'applied'` to
 
 Application workers use `WORKER_TOOL_DEFINITIONS` from [tool_definitions.py](tool_definitions.py) and `WORKER_TOOL_HANDLERS` from [database.py](database.py). Call `claim_job(company_name, job_id)` before opening the application tab. Only the worker that receives `claimed: true` proceeds. Later calls return `claimed: false` for an opening that is `in_progress` or `applied`. A `failed_to_apply` opening can be claimed again. Use `query_the_schema` for status checks.
 
+## Local application history
+
+The CLI and MCP server run the same three read-only queries against `job_tracker/applications.sqlite3`. From the project root, run `.venv/bin/python -m job_tracker.cli` followed by one of these commands. The CLI prints JSON.
+
+| CLI command | MCP tool | Result |
+| --- | --- | --- |
+| `recent 24` | `list_recently_applied_companies(hours)` | Distinct employers with confirmed submissions in the last 24 hours, most recent first. Fractional hours are supported. |
+| `applied "Sarvam AI"` | `has_applied_to_company(company_name)` | True if any submission to that employer was confirmed. |
+| `status "Sarvam AI"` | `get_company_status(company_name)` | Careers-page scan status and each job’s application status, link and submission time. An unknown employer returns `found: false`. |
+
+Install the dependencies with `.venv/bin/python -m pip install -r requirements.txt`. The [Codex project configuration](../.codex/config.toml) registers the local server. Other stdio clients can launch `.venv/bin/python -m job_tracker.mcp_server` with the project root as the working directory.
+
 ## Question workflow
 
 Run these commands from the project root with Python 3.10 or newer.

@@ -272,7 +272,7 @@ def save_application(
 
 
 def query_the_schema(
-    sql_query: str, *, database: Path = DATABASE
+    sql_query: str, *, parameters: tuple[Any, ...] = (), database: Path = DATABASE
 ) -> dict[str, Any]:
     """Run one read-only SQLite query and return its columns and result rows."""
     if not isinstance(sql_query, str):
@@ -283,7 +283,7 @@ def query_the_schema(
 
     try:
         with _read_history(database) as connection:
-            cursor = connection.execute(sql_query)
+            cursor = connection.execute(sql_query, parameters)
             if cursor.description is None:
                 raise ValueError("sql_query must return rows")
             columns = [column[0] for column in cursor.description]
