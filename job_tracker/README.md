@@ -30,4 +30,21 @@ python3 -m venv .venv
 
 Keep identity, education, experience, skills, and project details in `docs/candidate_profile.md`. Keep availability and compensation preferences in `docs/job_requirements.md`. Pass a configured chat model to `build_question_graph` in [application_questions.py](../application_questions.py).
 
+Build the graph once per application and invoke it with fresh fields for each page or conditional section. Use a stable control name or a section-and-label key for each ID so it still identifies the field after the page changes.
+
+```python
+from application_questions import build_question_graph
+
+graph = build_question_graph(model)
+context = {"company": company, "job_id": job_id, "job_description": description, "resume_text": resume}
+result = graph.invoke({**context, "fields": {
+    "role_type": {"question": "Which role?", "allowed_options": ["Internship", "Full-time"]},
+    "motivation": {"question": "Why this role?", "max_length": 350},
+}})
+```
+
+`result["answers"]` contains approved strings keyed by field ID. `result["needs_input"]` gives a reason for each unresolved field. The writer and critic handle a batch together and retry only rejected fields, up to three drafts each. A multiple-choice field accepts one label by default. Set `allow_multiple=True` for a multi-select, whose answer contains one displayed label per line.
+
+A browser worker can call `fill_question_page(graph, context, read_fields=read_fields, fill_field=fill_field)` for each page. Its reader returns a fresh mapping of visible, unanswered fields. Its fill action resolves the current control by ID, enters the approved answer, and verifies that the portal accepted it. The loop reads the form again after each choice and batches new or changed questions. The worker controls navigation and submission.
+
 To migrate a split profile, move the contents of `personal_details.md` and `technical_details.md` into the candidate profile under `## Personal Details` and `## Technical Details`. The loader uses each old file until its corresponding heading is present.
