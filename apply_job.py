@@ -66,6 +66,27 @@ def _finish(pending: Path, database: Path, *, portal_confirmed: bool = False) ->
     return {"status": "applied", "gmail_confirmed": email}
 
 
+def _job_description(page: Page, description: str) -> str:
+    """Read the posting as plain text, retaining the breaks between paragraphs and list items."""
+    return page.evaluate(r"""html => {
+        const plainText = markup => {
+            const template = document.createElement("template");
+            template.innerHTML = markup;
+            const fragment = template.content;
+            fragment.querySelectorAll("script, style, template, noscript, nav, form, button, select, textarea, [hidden]")
+                .forEach(node => node.remove());
+            fragment.querySelectorAll("p, div, br, li, section, article, blockquote, dt, dd, td, th, h1, h2, h3, h4, h5, h6")
+                .forEach(node => { node.before("\n"); node.after("\n"); });
+            return fragment.textContent.split("\n").map(line => line.trim()).filter(Boolean).join("\n");
+        };
+        const text = typeof html === "string" && plainText(html);
+        if (text) return text;
+        const sections = document.querySelectorAll('[data-qa="job-description"], [data-qa="posting-requirements"],'
+            + ' h3:has(+ [data-qa="posting-requirements"]), [data-qa="closing-description"], [data-qa="salary-range"]');
+        return plainText(Array.from(sections, section => section.outerHTML).join("\n"));
+    }""", description)
+
+
 def apply_to_job(job_url: str, source_portal_url: str, *, page: Page, graph, resume_path: Path | None = None,
                  resume_text: str = "", database: Path = DATABASE) -> dict:
     url = urlsplit(job_url)
@@ -107,6 +128,7 @@ def apply_to_job(job_url: str, source_portal_url: str, *, page: Page, graph, res
     if _already_applied(database, company, job_id):
         return {"status": "already_applied"}
 
+    job_description = _job_description(page, posting.get("description", ""))
     response = page.goto(href, wait_until="domcontentloaded")
     form = page.locator("form#application-form")
     if not response or not response.ok or page.url.split("?")[0] != apply_url or not form.is_visible():
@@ -115,7 +137,7 @@ def apply_to_job(job_url: str, source_portal_url: str, *, page: Page, graph, res
         return {"status": "needs_input", "reason": "Unexpected form submission destination."}
     answers = []
     reason = fill_application_form(form, graph, company=company, job_id=job_id, answers=answers,
-                                   resume_path=resume_path, resume_text=resume_text)
+                                   resume_path=resume_path, resume_text=resume_text, job_description=job_description)
     if reason:
         return {"status": "needs_input", "reason": reason}
     submit = form.locator("#btn-submit")

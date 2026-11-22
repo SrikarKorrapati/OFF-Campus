@@ -7,6 +7,8 @@ from pathlib import Path
 
 from playwright.sync_api import Error as BrowserError, Locator
 
+from question_graph import PortalQuestionState, matching_option_labels
+
 
 # Read the current controls together so labels, option lists and values describe the same page.
 _READ_FIELDS = r"""form => {
@@ -71,7 +73,7 @@ _READ_FIELDS = r"""form => {
 }"""
 
 
-def _enter_answer(form: Locator, field: dict, answer: str) -> str:
+def _enter_answer(form: Locator, field: dict, answer: str, *, multiple: bool) -> str:
     """Enter an approved answer and return the exact display text expected on readback."""
     kind, options = field["kind"], field["options"]
     if kind == "checkbox" and len(options) == 1:
@@ -80,12 +82,10 @@ def _enter_answer(form: Locator, field: dict, answer: str) -> str:
         form.locator(options[0]["selector"]).set_checked(answer.casefold() == "yes")
         return answer.capitalize()
     if kind in ("radio", "checkbox", "select"):
-        selected = {line.strip().casefold() for line in answer.splitlines() if line.strip()}
-        choices = [option for option in options if option["label"].casefold() in selected]
-        if not selected or {o["label"].casefold() for o in choices} != selected or len(choices) != len(selected):
+        selected = matching_option_labels(answer, [o["label"] for o in options], multiple=multiple)
+        if not selected:
             raise ValueError("The approved answer does not uniquely match the available options")
-        if len(choices) > 1 and (kind == "radio" or (kind == "select" and not field["multiple"])):
-            raise ValueError("Expected one option")
+        choices = [option for option in options if option["label"] in selected]
         if kind == "select":
             form.locator(field["selector"]).select_option(value=[o["value"] for o in choices])
         elif kind == "radio":
@@ -104,7 +104,7 @@ def _enter_answer(form: Locator, field: dict, answer: str) -> str:
 
 
 def fill_application_form(form: Locator, graph, *, company: str, job_id: str, resume_text: str,
-                          resume_path: Path | None, answers: list[dict[str, str]]) -> str | None:
+                          resume_path: Path | None, answers: list[dict[str, str]], job_description: str = "") -> str | None:
     """Return a blocking reason, or None when the currently visible form is complete."""
     accepted: dict[str, str] = {}
     skipped: set[str] = set()
@@ -139,18 +139,22 @@ def fill_application_form(form: Locator, graph, *, company: str, job_id: str, re
                 skipped.add(key)
                 continue
             labels = ["Yes", "No"] if kind == "checkbox" and len(choices) == 1 else [o["label"] for o in choices]
-            prompt = question + ("\nReturn exact option labels, one per line:\n" + "\n".join(labels) if labels else "")
-            if f.get("maxLength", -1) >= 0:
-                prompt += f"\nMaximum length: {f['maxLength']} characters."
-            answer = graph.invoke({"company": company, "job_id": job_id, "question": prompt,
-                                   "resume_text": resume_text}).get("final_answer")
+            multiple = (kind == "checkbox" and len(choices) > 1) or (kind == "select" and f["multiple"])
+            context: PortalQuestionState = {"company": company, "job_id": job_id, "resume_text": resume_text,
+                                            "job_description": job_description, "question": question}
+            if labels:
+                context["allowed_options"] = labels
+                context["allow_multiple"] = multiple
+            if kind in ("text", "textarea", "email", "tel", "url", "search") and f["maxLength"] >= 0:
+                context["max_length"] = f["maxLength"]
+            answer = graph.invoke(context).get("final_answer")
             if not answer:
                 if f["required"] or (f["value"] and not (kind == "checkbox" and f["value"] == "No")):
                     return f"Answer needed: {question}"
                 skipped.add(key)
                 continue
             try:
-                accepted[key] = _enter_answer(form, f, answer.strip())
+                accepted[key] = _enter_answer(form, f, answer.strip(), multiple=multiple)
             except ValueError as error:
                 return f"Check {question}: {error}"
             except BrowserError:
