@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from collections.abc import Iterable
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,42 +58,29 @@ def _encode_status_notes(notes: list[str] | None) -> str | None:
     return json.dumps(bullets, ensure_ascii=False)
 
 
-def _company_portal_values(company_name: str, career_page_url: str | None) -> tuple[str, str | None]:
+def add_company_portal(
+    company_name: str, career_page_url: str | None = None, *, database: Path = DATABASE
+) -> None:
+    """Register an employer. A new or changed careers URL starts unchecked."""
     company_name = normalize_name(company_name)
     career_page_url = (career_page_url or "").strip() or None
     if not company_name:
         raise ValueError("company_name is required")
     if career_page_url and not career_page_url.startswith(("https://", "http://")):
         raise ValueError("career_page_url must be an HTTP or HTTPS URL")
-    return company_name, career_page_url
 
-
-def add_company_portals(
-    companies: Iterable[tuple[str, str | None]], *, database: Path = DATABASE
-) -> None:
-    """Import company rows in one transaction. New or changed links start unchecked."""
-    values = [_company_portal_values(name, url) for name, url in companies]
     with _write(database) as connection:
-        connection.executemany(
+        connection.execute(
             """
-            INSERT INTO applications (
-                company_name, career_page_url
-            ) VALUES (?, ?)
+            INSERT INTO applications (company_name, career_page_url) VALUES (?, ?)
             ON CONFLICT (company_name) WHERE job_id IS NULL DO UPDATE SET
                 career_page_url = excluded.career_page_url,
                 last_checked_at = NULL, status = 'not_checked', status_notes_json = '[]'
             WHERE excluded.career_page_url IS NOT NULL
               AND excluded.career_page_url IS NOT applications.career_page_url
             """,
-            values,
+            (company_name, career_page_url),
         )
-
-
-def add_company_portal(
-    company_name: str, career_page_url: str | None = None, *, database: Path = DATABASE
-) -> None:
-    """Register one employer and its optional careers URL."""
-    add_company_portals([(company_name, career_page_url)], database=database)
 
 
 def record_company_portal_check(
@@ -189,47 +175,6 @@ def save_application(
                 applied_at = :applied_at WHERE company_name = :company AND job_id = :job_id
         """, values)
         return application_id
-
-
-def list_applied_jobs_for_company(
-    company: str, *, database: Path = DATABASE
-) -> list[dict[str, str]]:
-    """List saved applications for a company; an empty list means none are recorded."""
-    company = normalize_name(company)
-    if not company:
-        raise ValueError("company is required")
-    with migrations.read_history(database, SCHEMA) as connection:
-        connection.row_factory = sqlite3.Row
-        rows = connection.execute("""
-            SELECT job_name, job_id, job_link, source_portal_url, applied_at FROM applications
-            WHERE company_name = ? AND status = 'applied' AND job_id IS NOT NULL
-            ORDER BY job_name, job_id
-        """, (company,))
-        return [dict(row) for row in rows]
-
-
-def check_job_application_status(
-    job_id: str, *, company_name: str | None = None, database: Path = DATABASE
-) -> dict[str, Any]:
-    """Look up a requisition within an employer. Ambiguous ID-only lookups need a name."""
-    job_id = job_id.strip()
-    if not job_id:
-        raise ValueError("job_id is required")
-    sql = "SELECT status, job_link FROM applications WHERE job_id = ?"
-    parameters = [job_id]
-    if company_name is not None:
-        company_name = normalize_name(company_name)
-        if not company_name:
-            raise ValueError("company_name is required")
-        sql += " AND company_name = ?"
-        parameters.append(company_name)
-    with migrations.read_history(database, SCHEMA) as connection:
-        rows = connection.execute(sql + " LIMIT 2", parameters).fetchall()
-    if len(rows) > 1:
-        raise ValueError("Multiple employers use this job_id. Supply company_name.")
-    if not rows or rows[0][0] != "applied":
-        return {"applied": False}
-    return {"applied": True, "job_link": rows[0][1]}
 
 
 def query_the_schema(
