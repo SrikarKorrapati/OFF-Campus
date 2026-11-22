@@ -17,7 +17,7 @@ TOOL_DEFINITIONS = [
             "status = 'applied'. A failed attempt is 'failed_to_apply'. Names are uppercase with "
             "underscores. Timestamps are ISO 8601 UTC. career_page_url is the employer's portal, "
             "job_link is the opening, and source_portal_url is where it was found. "
-            "The JSON lists hold question/answer objects and up to five status notes, respectively."
+            "The JSON lists hold question/answer objects and status notes, respectively."
         ),
         "parameters": {
             "type": "object",

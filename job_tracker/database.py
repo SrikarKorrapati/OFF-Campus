@@ -116,21 +116,6 @@ def normalize_name(name: str) -> str:
     return "_".join(name.split()).upper()
 
 
-def _encode_status_notes(notes: list[str] | None) -> str | None:
-    if notes is None:
-        return None
-    if not isinstance(notes, list):
-        raise TypeError("status_notes must be a list of bullet points")
-    if len(notes) > 5:
-        raise ValueError("status_notes accepts at most five bullet points")
-    bullets = []
-    for note in notes:
-        if not isinstance(note, str) or len(note.strip().splitlines()) != 1:
-            raise ValueError("Each status note must be one nonblank line of text")
-        bullets.append(note.strip())
-    return json.dumps(bullets, ensure_ascii=False)
-
-
 def add_company_portal(
     company_name: str, career_page_url: str | None = None, *, database: Path = DATABASE
 ) -> None:
@@ -163,7 +148,7 @@ def record_company_portal_check(
     company_name = normalize_name(company_name)
     if not company_name:
         raise ValueError("company_name is required")
-    encoded_notes = _encode_status_notes(status_notes)
+    encoded_notes = None if status_notes is None else json.dumps(status_notes, ensure_ascii=False)
     checked_at = _utc_now()
     with _write(database) as connection:
         result = connection.execute(
@@ -233,13 +218,11 @@ def save_application(
 
     if status not in ("applied", "failed_to_apply"):
         raise ValueError("Job status must be applied or failed_to_apply")
-    encoded_notes = _encode_status_notes(status_notes)
-    if status == "failed_to_apply" and not status_notes:
-        raise ValueError("A failed attempt requires at least one reason in status_notes")
     values = {
         "company": company_name, "job_id": job_id, "name": job_name, "link": job_link,
         "source": source_portal_url, "answers": json.dumps(questions_answers, ensure_ascii=False),
-        "status": status, "notes": encoded_notes or "[]",
+        "status": status,
+        "notes": json.dumps([] if status_notes is None else status_notes, ensure_ascii=False),
         "applied_at": _utc_now() if status == "applied" else None,
     }
     with _write(database) as connection:
@@ -287,15 +270,14 @@ def query_the_schema(
             if cursor.description is None:
                 raise ValueError("sql_query must return rows")
             columns = [column[0] for column in cursor.description]
-            rows = [
-                {
-                    column: value.hex() if isinstance(value, bytes) else value
-                    for column, value in zip(columns, row)
-                }
-                for row in cursor.fetchall()
-            ]
+            records = cursor.fetchall()
     except sqlite3.Error as error:
         raise ValueError(f"SQL query failed: {error}") from error
+
+    rows = [
+        {key: value.hex() if isinstance(value, bytes) else value for key, value in zip(columns, record)}
+        for record in records
+    ]
     return {"columns": columns, "rows": rows}
 
 
