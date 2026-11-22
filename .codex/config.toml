@@ -1,5 +1,5 @@
 [agents]
-# Shared by company scans, portal scans, and application workers.
+# Native job workers per source session. Python limits the number of source sessions.
 max_concurrent_threads_per_session = 36
 
 [mcp_servers.job_tracker]

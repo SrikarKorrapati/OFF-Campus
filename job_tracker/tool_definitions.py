@@ -2,8 +2,27 @@
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
+from typing_extensions import NotRequired, TypedDict
 
 from . import database
+
+
+class PortalField(TypedDict):
+    question: str
+    allowed_options: NotRequired[list[str]]
+    allow_multiple: NotRequired[bool]
+    max_length: NotRequired[int]
+
+
+class PageAnswers(TypedDict):
+    answers: dict[str, str]
+    needs_input: dict[str, str]
+
+
+class RecordedAnswer(TypedDict):
+    question: str
+    answer: str
+
 
 TABLES = {
     "applications": (
@@ -62,5 +81,25 @@ def register_mcp_tools(server: FastMCP) -> None:
 
     @server.tool(annotations=ToolAnnotations(openWorldHint=False, destructiveHint=False))
     def claim_job(company_name: str, job_id: str) -> dict:
-        """Reserve an employer requisition before applying. Only the worker receiving claimed=true proceeds."""
+        """Register the verified employer and reserve its requisition. Only the worker receiving claimed=true proceeds."""
         return database.claim_job(company_name, job_id)
+
+    @server.tool(annotations=ToolAnnotations(openWorldHint=False, destructiveHint=False, idempotentHint=True))
+    def record_job_outcome(company_name: str, job_id: str, job_name: str, job_link: str, source_portal_url: str,
+                           status: database.JobStatus, questions_answers: list[RecordedAnswer],
+                           notes: list[str] | None = None) -> dict:
+        """Save one claimed job's actual answers and outcome. Use in_progress for an uncertain submission.
+
+        Pass the verified posting URL and the discovery URL or WhatsApp. Notes accept up to five short lines.
+        """
+        return database.record_job_outcome(company_name, job_id, job_name, job_link, source_portal_url,
+                                           status, questions_answers, notes)
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
+    async def answer_application_fields(company: str, job_id: str, job_description: str,
+                                        fields: dict[str, PortalField], resume_text: str = "") -> PageAnswers:
+        """Draft and review a page's independent fields keyed by stable ID. Returns answers and needs_input by ID."""
+        from application_questions import answer_page
+
+        return await answer_page({"company": company, "job_id": job_id, "job_description": job_description,
+                                  "fields": fields, "resume_text": resume_text})

@@ -5,15 +5,18 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from collections.abc import Mapping, Sequence
 from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import urlsplit
 
 DIRECTORY = Path(__file__).resolve().parent
 DATABASE = DIRECTORY / "applications.sqlite3"
 SCHEMA = DIRECTORY / "schema.sql"
 SCHEMA_VERSION = 7
 SQLValue = str | int | float | None
+JobStatus = Literal["applied", "failed_to_apply", "in_progress"]
 CHECKPOINTS = {"job_portals": "last_accessed_at", "whatsapp_channels": "last_checked_at"}
 SAVE_CHANNEL_CHECKPOINT = """
     INSERT INTO whatsapp_channels (channel_id, last_checked_at) VALUES (?, ?)
@@ -83,12 +86,16 @@ def normalize_name(name: str) -> str:
 
 
 def claim_job(company_name: str, job_id: str, *, database: Path = DATABASE) -> dict[str, bool | str]:
-    """Claim a new or previously failed opening for one application worker."""
+    """Register the verified employer and claim a new or previously failed opening."""
     key = (normalize_name(company_name), job_id.strip())
     if not all(key):
         raise ValueError("company_name and job_id are required")
 
     with _write(database) as connection:
+        connection.execute("""
+            INSERT INTO applications (company_name) VALUES (?)
+            ON CONFLICT (company_name) WHERE job_id IS NULL DO NOTHING
+        """, (key[0],))
         result = connection.execute("""
             INSERT INTO applications (application_id, company_name, job_id, status)
             VALUES ((SELECT coalesce(max(application_id), 0) + 1 FROM applications), ?, ?, 'in_progress')
@@ -261,6 +268,34 @@ def table_sql(table: str, sql_query: str, parameters: list[SQLValue] | tuple = (
 def read_applications(sql_query: str, parameters: list[SQLValue] | tuple = ()) -> dict[str, Any]:
     """Read history for the question agent and the CLI."""
     return table_sql("applications", sql_query, parameters, read_only=True)
+
+
+def record_job_outcome(company_name: str, job_id: str, job_name: str, job_link: str, source_portal_url: str,
+                       status: JobStatus, questions_answers: Sequence[Mapping[str, object]],
+                       notes: list[str] | None = None, *, database: Path = DATABASE) -> dict:
+    """Save a claimed opening's outcome. Only an identical terminal outcome can be replayed."""
+    if not job_name.strip():
+        raise ValueError("Provide the job title")
+    urls = [job_link] if source_portal_url == "WhatsApp" else [job_link, source_portal_url]
+    for link in urls:
+        url = urlsplit(link)
+        if url.scheme not in ("http", "https") or not url.hostname or any(c.isspace() for c in link):
+            raise ValueError("Provide the posting URL and the discovery URL or WhatsApp")
+    if notes and (len(notes) > 5 or any(not note.strip() or "\n" in note or "\r" in note for note in notes)):
+        raise ValueError("Use up to five single-line status notes")
+
+    result = table_sql("applications", """
+        UPDATE applications SET job_name = ?1, job_link = ?2, source_portal_url = ?3, status = ?4,
+            questions_answers_json = ?5, status_notes_json = coalesce(?6, status_notes_json)
+        WHERE company_name = normalize_name(?7) AND job_id = ?8
+          AND (status = 'in_progress' OR (status = ?4 AND job_name = normalize_name(?1)
+               AND job_link = ?2 AND source_portal_url = ?3 AND questions_answers_json = ?5
+               AND status_notes_json = coalesce(?6, status_notes_json)))
+    """, (job_name, job_link, source_portal_url, status, json.dumps(questions_answers, sort_keys=True),
+          json.dumps(notes) if notes is not None else None, company_name, job_id.strip()), database=database)
+    if result["affected"] != 1:
+        raise ValueError("No active claim or identical recorded outcome for this employer and requisition")
+    return {"status": status, "affected": result["affected"]}
 
 
 if __name__ == "__main__":

@@ -3,29 +3,28 @@
 from __future__ import annotations
 
 import json
+import os
+from functools import cache
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
+from dotenv import dotenv_values
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import Runnable
+from langchain_openai import ChatOpenAI
 from langgraph.graph import START, StateGraph, add_messages
 from langgraph.types import Command
-from typing_extensions import NotRequired, TypedDict
+from openai import OpenAIError
+from pydantic import SecretStr
+from typing_extensions import TypedDict
 
 from job_tracker.database import read_applications
-from job_tracker.tool_definitions import TOOL_DEFINITIONS
+from job_tracker.tool_definitions import TOOL_DEFINITIONS, PageAnswers, PortalField
 
 
 DOCS = Path(__file__).resolve().parent / "docs"
 MAX_ANSWER_ATTEMPTS = 3
-
-
-class PortalField(TypedDict):
-    question: str
-    allowed_options: NotRequired[list[str]]
-    allow_multiple: NotRequired[bool]
-    max_length: NotRequired[int]
 
 
 class ApplicationContext(TypedDict, total=False):
@@ -37,11 +36,6 @@ class ApplicationContext(TypedDict, total=False):
 
 class PageQuestions(ApplicationContext):
     fields: dict[str, PortalField]
-
-
-class PageAnswers(TypedDict):
-    answers: dict[str, str]
-    needs_input: dict[str, str]
 
 
 class _BatchState(PageQuestions, PageAnswers, total=False):
@@ -208,6 +202,25 @@ def build_question_graph(model: BaseChatModel):
     graph.add_edge(START, "start")
     graph.add_edge("tools", "write")
     return graph.compile()
+
+
+@cache
+def _configured_graph():
+    settings = dotenv_values(DOCS.parent / ".env", interpolate=False)
+    key = os.environ.get("OPENAI_API_KEY") or settings.get("OPENAI_API_KEY")
+    if not key:
+        raise ValueError("Set OPENAI_API_KEY in the environment or project .env to answer application fields.")
+    model = os.environ.get("OPENAI_MODEL") or settings.get("OPENAI_MODEL") or "gpt-4.1-mini"
+    return build_question_graph(ChatOpenAI(model=model, api_key=SecretStr(key)))
+
+
+async def answer_page(page: PageQuestions) -> PageAnswers:
+    """Run a fresh field batch on the MCP server's shared, stateless graph."""
+    try:
+        return await _configured_graph().ainvoke(page)
+    except OpenAIError as error:
+        # Provider error bodies can include fragments of credentials.
+        raise RuntimeError(f"Application question model request failed ({type(error).__name__}).") from None
 
 
 def fill_question_page(

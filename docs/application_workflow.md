@@ -1,70 +1,23 @@
 # Job application workflow
 
-The daily automation checks shortlisted companies’ careers pages first, then searches job portals. In both phases, use the connected browser profile to apply to openings that meet the [job requirements](job_requirements.md). Each worker opens its own tab.
-
-If the project tracker is enabled and its tools are missing from the chat, use the [project MCP command](../job_tracker/README.md#tracker-tools) to list and call them.
+The daily automation runs `.venv/bin/python -m job_tracker.daily_scan` from the project root. Python starts a separate Codex session per source, with up to four source sessions open at once. Each session can use up to 36 native job subagents. Each agent uses its own browser tab. A source hands matching openings to its children while it continues searching. [Python entry point](../job_tracker/daily_scan.py)
 
 ## Company careers pages
 
-Use the tracker MCP tool `applications_sql` to select every employer never checked or last checked at least 72 hours ago. Run the query once at the start of the scan.
-
-```sql
-SELECT company_name, career_page_url
-FROM applications
-WHERE job_id IS NULL
-  AND (last_checked_at IS NULL OR datetime(last_checked_at) <= datetime('now', '-3 days'))
-ORDER BY last_checked_at, company_name;
-```
-
-1. Visit each selected employer’s official careers page, queuing companies as worker slots fill. If the URL is missing or points to the wrong employer, find the careers page through the employer’s website and use the verified link for this scan. If the page cannot be verified or accessed, report the company and keep it due.
-2. Check all active openings on that page against the job requirements. Call `claim_job(company_name, job_id)` for each eligible opening. Only the worker that wins the claim follows [Apply](#apply) from step 1 to fill and submit the form and record the outcome. Save the careers page as the discovery source and the individual opening URL as `job_link`.
-3. After a full company scan, use `applications_sql` to register any new or corrected careers URL, then mark the employer row checked with its UTC scan time. Do this even for zero matches. A scan is complete when every opening was applied to, already applied to, closed or ruled ineligible. Keep the previous timestamp for blocked or unresolved work. Wait for every selected company worker to finish or report a blocker before starting the job portals.
+Python selects every shortlisted company never checked or last checked at least 72 hours ago. Its agent verifies the official careers page, finds it if the saved URL is missing or incorrect, and checks all active openings against the [job requirements](job_requirements.md). The verified careers URL is the discovery source. Python saves the URL and scan time after a complete scan, including a scan with zero matches.
 
 ## Daily portal scan
 
-1. **Start the scan.** Read `SELECT id, name, last_accessed_at FROM job_portals ORDER BY id` with `job_portals_sql`. Capture one UTC start time with `date -u +%Y-%m-%dT%H:%M:%SZ`. Start one worker per portal, passing its row, link from the [source list](job_sources.md), and the shared start time. Queue workers when all slots are in use.
-2. **Find new openings.** Use the portal’s `last_accessed_at` as the cutoff. If it is `NULL`, start exactly 14 days before the shared UTC scan start. Check postings at or after the cutoff and before the scan start. Include overlapping date labels and check dates on the employer's site when needed. If the posting date cannot be placed in the window using either site, report it for follow-up. For WhatsApp, follow the [channel scan skill](../.agents/skills/whatsapp-job-scan/SKILL.md) to scan followed channels from their saved times.
-3. **Apply in parallel.** Start a job worker for each match while the portal worker continues searching. Pass the listing URL and discovery source (the job board URL or `WhatsApp`). Verify eligibility and the requisition ID on the employer’s site. Only the worker that wins `claim_job(company_name, job_id)` follows [Apply](#apply) to fill and submit the form and record the outcome.
-4. **Save progress.** Wait for the portal’s job workers. After a complete portal scan, use `job_portals_sql` to run `UPDATE job_portals SET last_accessed_at = max(coalesce(last_accessed_at, ''), ?) WHERE id = ?` with the original UTC start time and portal ID, even for zero matches. Verify that one portal row was updated. A scan is complete when every candidate was applied to, already applied to, closed or ruled ineligible. Leave the old time on blocked, partial or unresolved work so the next run can retry. Reconcile any interrupted submission against the employer portal or confirmation email before retrying it. Report applications and outstanding work by portal.
+After the company sessions finish, Python starts a session per job board. Each scans postings from its saved cutoff (inclusive) to the shared UTC start time (exclusive). A first scan looks back 14 days. The portal agent verifies ambiguous dates and passes the board URL to each job worker as the discovery source. [Job portals](job_sources.md)
+
+## WhatsApp channels
+
+WhatsApp runs once in its own session after the job boards. Its agent visits every followed channel it can discover and hands off each distinct job link with the discovery source `WhatsApp`. Each channel resumes from its own checkpoint, or 14 days before the scan start on the first visit. [Channel scan](../.agents/skills/whatsapp-job-scan/SKILL.md)
 
 ## Apply
 
-When creating a job portal account or signing back into that account, enter `JOB_PORTAL_PASSWORD` from the project’s local `.env` in the verified portal’s password field. Keep the value out of model prompts and application records.
+The job subagent opens its own tab, verifies the opening and requisition ID on the employer's site, and checks eligibility. Only the worker that wins the atomic `claim_job` fills the form. It uses the candidate profile for identity fields and the writer–critic graph for the remaining questions. It submits once, records the submitted answers and outcome in the tracker, and checks Gmail for confirmation. Uncertain submissions need reconciliation before a retry. [Job agent instructions](../.codex/agents/job_application.toml)
 
-1. Check each opening against the [job requirements](job_requirements.md). Before sharing personal details, confirm the opening is active on the employer’s careers page.
-2. Use `applications_sql` to look up the employer and requisition ID. Skip openings already marked `applied`.
-3. Fill known contact and identity fields from the candidate profile. Build the question graph once per application. Send the remaining independent questions on each page together, keyed by stable field ID, with their displayed options and character limits. Fill approved answers by ID. After a choice, read the live form again, discard answers for hidden or changed fields, and send newly revealed questions in the next batch. Ask for missing facts on unresolved required fields. [Batch inputs and outputs](../job_tracker/README.md#question-workflow)
-4. Read email verification codes with `gws`. Enter each code only in the verification field and omit it from saved answers. Follow browser prompts for verification, CAPTCHAs and submission.
-5. Update the claimed row with `applications_sql` to save the opening, discovery source and application Q&A. Mark a confirmed submission `applied`, then check Gmail for the confirmation and report whether it arrived. Mark a failed attempt `failed_to_apply` and explain why. Use up to five short, single-line status notes. [Outcome update](#application-outcomes)
+## Saving progress
 
-## Tracker updates
-
-### Company updates
-
-Use this statement with `applications_sql` to register a shortlisted employer. Bind its name and careers URL (or null). A corrected URL starts unchecked. An unchanged or unknown URL preserves an existing check.
-
-```sql
-INSERT INTO applications (company_name, career_page_url) VALUES (normalize_name(?), ?)
-ON CONFLICT (company_name) WHERE job_id IS NULL DO UPDATE
-SET career_page_url = excluded.career_page_url, status = 'not_checked',
-    last_checked_at = NULL, status_notes_json = '[]'
-WHERE excluded.career_page_url IS NOT NULL AND career_page_url IS NOT excluded.career_page_url;
-```
-
-After a completed check, bind the UTC scan time and employer name.
-
-```sql
-UPDATE applications SET status = 'checked', last_checked_at = max(coalesce(last_checked_at, ''), ?)
-WHERE company_name = normalize_name(?) AND job_id IS NULL;
-```
-
-### Application outcomes
-
-After `claim_job` succeeds, update that row with `applications_sql`. Bind a confirmed or failed status, title, employer posting URL, discovery source, JSON answers, JSON notes, company, and requisition ID. Check that one row was updated. The tracker stamps a confirmed submission in UTC and preserves that timestamp on later edits.
-
-```sql
-UPDATE applications
-SET status = ?, job_name = ?, job_link = ?, source_portal_url = ?,
-    questions_answers_json = ?, status_notes_json = ?
-WHERE company_name = normalize_name(?) AND job_id = ?;
-```
+Python waits for the session's job results and checks reported submissions against SQLite. A complete scan accounts for every match as applied, already applied, closed or ineligible. Blocked or partial work leaves the source due. WhatsApp can advance a completed channel while another channel remains due. If the CLI cannot reach the connected browser, Python reports the blocker and stops launching new sources. [Source selection and checkpoints](../job_tracker/scan_sources.py)

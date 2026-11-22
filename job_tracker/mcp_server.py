@@ -1,4 +1,4 @@
-"""Expose the three scoped SQL tools and the atomic job claim over MCP stdio."""
+"""Serve the tracker and application question tools over MCP stdio."""
 
 from mcp.server.fastmcp import FastMCP
 

@@ -24,7 +24,7 @@ When a chat's tool list omits the tracker, run these commands from the project r
 echo '{"sql_query":"SELECT count(*) AS tracked_rows FROM applications"}' | .venv/bin/python -m job_tracker.cli mcp applications_sql
 ```
 
-The local MCP server exposes four tools. Each SQL tool accepts one statement, an optional list of parameters for `?` placeholders, and returns `columns` and `rows`. Writes also return `affected`. Use SELECT (including WITH ... SELECT), INSERT, UPDATE or DELETE on the tool’s table. For an explicitly requested deletion, pass `cleanup=true` and identify the records in the WHERE clause. Routine scans leave cleanup off. Read back a row after a write to see normalized names, generated IDs and timestamps.
+Each SQL tool accepts one statement, an optional list of parameters for `?` placeholders, and returns `columns` and `rows`. Writes also return `affected`. Use SELECT (including WITH ... SELECT), INSERT, UPDATE or DELETE on the tool’s table. For an explicitly requested deletion, pass `cleanup=true` and identify the records in the WHERE clause. Routine scans leave cleanup off. Read back a row after a write to see normalized names, generated IDs and timestamps.
 
 | Tool | Use |
 | --- | --- |
@@ -32,8 +32,10 @@ The local MCP server exposes four tools. Each SQL tool accepts one statement, an
 | `job_portals_sql` | Read the discovery sources and update each completed scan’s UTC start time. |
 | `whatsapp_channels_sql` | Read and update each followed channel’s checkpoint. |
 | `claim_job(company_name, job_id)` | Atomically reserve a new or previously failed opening. Proceed only when `claimed` is true. |
+| `record_job_outcome` | Save the job details, Q&A and outcome for a claimed opening. |
+| `answer_application_fields` | Draft and review a page of questions. Returns approved answers and missing facts by field ID. |
 
-The [application workflow](../docs/application_workflow.md#company-updates) contains the routine updates. The [project configuration](../.codex/config.toml) launches the server, which creates or upgrades the tracker on startup. To start it from another stdio client, run `.venv/bin/python -m job_tracker.mcp_server` in the project root.
+The [daily scan](daily_scan.py) uses the [source functions](scan_sources.py) to select work and update checkpoints. The [project configuration](../.codex/config.toml) launches the server, which creates or upgrades the tracker on startup. To start it from another stdio client, run `.venv/bin/python -m job_tracker.mcp_server` in the project root.
 
 ## Local application history
 
@@ -54,7 +56,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-Keep identity, education, experience, skills, and project details in the [candidate profile](../docs/candidate_profile.md). Keep availability and compensation preferences in [job requirements](../docs/job_requirements.md). Pass a configured chat model to `build_question_graph` in [application_questions.py](../application_questions.py).
+Keep identity, education, experience, skills, and project details in the [candidate profile](../docs/candidate_profile.md). Keep availability and compensation preferences in [job requirements](../docs/job_requirements.md). The question tool reads `OPENAI_API_KEY` from the environment or the project’s local `.env`. Set `OPENAI_MODEL` to override its default `gpt-4.1-mini`. Python callers can also pass a configured model to `build_question_graph` in [application_questions.py](../application_questions.py).
 
 Build the graph once per application and invoke it with fresh fields for each page or conditional section. Use a stable control name or a section-and-label key for each ID so it still identifies the field after the page changes.
 
