@@ -5,3 +5,4 @@ applications.sqlite3-shm
 applications.sqlite3-wal
 *.pre-migration-*.sqlite3
 __pycache__/
+/company_shortlist.csv

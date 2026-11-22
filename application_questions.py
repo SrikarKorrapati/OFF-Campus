@@ -12,7 +12,7 @@ from langgraph.graph import START, StateGraph, add_messages
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
-from applied_jobs.store import TOOL_DEFINITIONS, TOOL_HANDLERS
+from job_tracker.database import TOOL_DEFINITIONS, TOOL_HANDLERS
 
 
 DOCS = Path(__file__).resolve().parent / "docs"

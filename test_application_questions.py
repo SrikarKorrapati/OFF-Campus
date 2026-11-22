@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import question_graph
+import application_questions
 
 
 class ApplicantContextTest(unittest.TestCase):
@@ -11,7 +11,7 @@ class ApplicantContextTest(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.docs = Path(directory.name)
-        docs_patch = patch.object(question_graph, "DOCS", self.docs)
+        docs_patch = patch.object(application_questions, "DOCS", self.docs)
         docs_patch.start()
         self.addCleanup(docs_patch.stop)
         (self.docs / "job_requirements.md").write_text("Available in January.", encoding="utf-8")
@@ -26,7 +26,7 @@ class ApplicantContextTest(unittest.TestCase):
 
         for resume in ("", "Example resume"):
             with self.subTest(resume=resume):
-                context = question_graph._applicant_context(resume)
+                context = application_questions._applicant_context(resume)
                 self.assertIn(profile, context)
                 self.assertIn("Available in January.", context)
                 self.assertIn(resume or "(not provided)", context)
@@ -37,7 +37,7 @@ class ApplicantContextTest(unittest.TestCase):
         (self.docs / "personal_details.md").write_text("Example City", encoding="utf-8")
         (self.docs / "technical_details.md").write_text("Example project", encoding="utf-8")
 
-        context = question_graph._applicant_context("")
+        context = application_questions._applicant_context("")
         for fact in ("Example degree", "Example City", "Example project", "Available in January."):
             self.assertIn(fact, context)
 
@@ -51,7 +51,7 @@ class ApplicantContextTest(unittest.TestCase):
             with self.subTest(heading=heading):
                 profile = f"# Candidate Profile\n\n## {heading}\nUpdated detail"
                 (self.docs / "candidate_profile.md").write_text(profile, encoding="utf-8")
-                context = question_graph._applicant_context("")
+                context = application_questions._applicant_context("")
                 self.assertIn("Updated detail", context)
                 self.assertNotIn(superseded, context)
                 self.assertIn(retained, context)

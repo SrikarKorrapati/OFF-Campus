@@ -6,7 +6,7 @@ import fcntl
 import json
 from pathlib import Path
 
-STATE = Path(__file__).resolve().parents[4] / "applied_jobs/whatsapp_scan/last_checked.json"
+STATE = Path(__file__).resolve().parents[4] / "job_tracker/whatsapp_scan/last_checked.json"
 UTC_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 
