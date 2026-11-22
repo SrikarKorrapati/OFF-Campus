@@ -1,4 +1,4 @@
-"""Track company portals and job applications in one SQLite table."""
+"""Track job sources, company portals, and job applications in SQLite."""
 
 from __future__ import annotations
 
@@ -13,7 +13,8 @@ from typing import Any
 DIRECTORY = Path(__file__).resolve().parent
 DATABASE = DIRECTORY / "applications.sqlite3"
 SCHEMA = DIRECTORY / "schema.sql"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
+UTC_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 
 def _ensure_schema(connection: sqlite3.Connection) -> None:
@@ -24,7 +25,9 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         # SQLite requires rebuilding the table to extend its status CHECK.
         connection.execute("ALTER TABLE applications RENAME TO applications_v4")
         connection.execute("DROP INDEX IF EXISTS applications_company_portal_unique")
-    elif version or connection.execute("SELECT 1 FROM sqlite_schema WHERE type = 'table'").fetchone():
+    elif version not in (0, 5) or (
+        version == 0 and connection.execute("SELECT 1 FROM sqlite_schema WHERE type = 'table'").fetchone()
+    ):
         raise ValueError(f"Unsupported tracker schema version {version}. Expected {SCHEMA_VERSION}.")
 
     for statement in SCHEMA.read_text(encoding="utf-8").split(";"):
@@ -66,7 +69,20 @@ def initialize(database: Path = DATABASE) -> Path:
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(timezone.utc).strftime(UTC_FORMAT)
+
+
+def record_job_portal_scan(portal_id: int, scan_started_at: str, *, database: Path = DATABASE) -> str:
+    """Record a completed scan's UTC start and return the latest saved timestamp."""
+    started = datetime.strptime(scan_started_at, UTC_FORMAT).strftime(UTC_FORMAT)
+    with _write(database) as connection:
+        row = connection.execute("""
+            UPDATE job_portals SET last_accessed_at = max(coalesce(last_accessed_at, ''), ?)
+            WHERE id = ? RETURNING last_accessed_at
+        """, (started, portal_id)).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown job portal ID: {portal_id}")
+        return row[0]
 
 
 def normalize_name(name: str) -> str:
@@ -262,6 +278,8 @@ TOOL_DEFINITIONS = [
         "name": "query_the_schema",
         "description": (
             "Run one read-only SQLite query and return the columns and rows. "
+            "job_portals(id, name, last_accessed_at) lists discovery portals and their last "
+            "successful scan starts in UTC. A NULL timestamp means the portal has never been scanned. "
             "CREATE TABLE applications (company_name TEXT, career_page_url TEXT, last_checked_at TEXT, "
             "application_id INTEGER, job_id TEXT, job_name TEXT, job_link TEXT, source_portal_url TEXT, "
             "applied_at TEXT, questions_answers_json TEXT, status TEXT, status_notes_json TEXT). "

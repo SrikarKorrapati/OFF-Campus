@@ -1,5 +1,7 @@
 # Application workflow
 
+The [daily portal scan](job_sources.md#run-the-portals-in-codex) reads each portal’s last successful check and sends new matching openings through this workflow.
+
 Reuse confirmed answers and handle routine steps independently. Ask only for a missing fact, decision, or action.
 
 ## Shortlist criteria

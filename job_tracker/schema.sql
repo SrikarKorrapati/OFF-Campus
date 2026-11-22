@@ -20,3 +20,15 @@ CREATE TABLE IF NOT EXISTS applications (
 
 CREATE UNIQUE INDEX IF NOT EXISTS applications_company_portal_unique
     ON applications (company_name) WHERE job_id IS NULL;
+
+CREATE TABLE IF NOT EXISTS job_portals (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    last_accessed_at TEXT
+);
+
+INSERT INTO job_portals (name) VALUES
+    ('Y Combinator'), ('Wellfound'), ('Cutshort'), ('Hirist'),
+    ('DevsUnite'), ('Internshala'), ('Freshersworld'),
+    ('LinkedIn'), ('Naukri'), ('Indeed'), ('Foundit'), ('Shine'), ('WhatsApp')
+ON CONFLICT (name) DO NOTHING;
