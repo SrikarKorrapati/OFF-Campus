@@ -20,6 +20,8 @@ Select private-sector employers with in-house engineering teams that build their
 
 ## Apply and confirm
 
+When creating a job portal account or signing back into that account, enter `JOB_PORTAL_PASSWORD` from the project’s local `.env` in the verified portal’s password field. Keep the value out of model prompts and application records.
+
 1. Before applying, check the tracker for a confirmed submission using the employer name and requisition ID. Skip openings already marked `applied`.
 2. Use the LangGraph workflow for each field. Give it `docs/candidate_profile.md`, the résumé, and `docs/job_requirements.md`. Write a natural, specific answer and fill the field only once the critic approves it, with up to three answer attempts.
 3. For an email OTP, read the matching Gmail message through the authorized GWS CLI. Enter the code only in the portal's verification field and keep it out of saved answers. Follow the browser's confirmation prompts for OTP entry, each CAPTCHA, and final submission.
