@@ -16,7 +16,7 @@ ORDER BY last_checked_at, company_name;
 
 1. Visit each selected employer’s official careers page, queuing companies as worker slots fill. If the URL is missing or points to the wrong employer, find the careers page through the employer’s website and use the verified link for this scan. If the page cannot be verified or accessed, report the company and keep it due.
 2. Check all active openings on that page against the job requirements. In application mode, call `claim_job(company_name, job_id)` for each eligible opening. Only the worker that wins the claim follows [Apply](#apply) from step 1 to fill and submit the form and record the outcome. Save the careers page as the discovery source and the individual opening URL as `job_link`.
-3. After a full company scan in application mode, use `applications_sql` to register any new or corrected careers URL, then mark the employer row checked with its UTC scan time. Do this even for zero matches. A scan is complete when every opening was applied to, already applied to, closed or ruled ineligible. Keep the previous timestamp for blocked or unresolved work. Wait for every selected company worker to finish or report a blocker before starting the job portals. [Company updates](#company-updates)
+3. After a full company scan in application mode, use `applications_sql` to register any new or corrected careers URL, then mark the employer row checked with its UTC scan time. Do this even for zero matches. A scan is complete when every opening was applied to, already applied to, closed or ruled ineligible. Keep the previous timestamp for blocked or unresolved work. Wait for every selected company worker to finish or report a blocker before starting the job portals.
 
 ## Daily portal scan
 
