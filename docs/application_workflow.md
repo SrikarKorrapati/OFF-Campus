@@ -2,6 +2,8 @@
 
 The daily automation checks shortlisted companies’ careers pages first, then searches job portals. Use the connected browser profile and the [job requirements](job_requirements.md) in both phases. Each worker opens its own tab. An explicit search-only run returns verified openings and leaves the scan timestamps unchanged.
 
+If the project tracker is enabled and its tools are missing from the chat, use the [project MCP command](../job_tracker/README.md#tracker-tools) to list and call them.
+
 ## Company careers pages
 
 Use the tracker MCP tool `applications_sql` to select every employer never checked or last checked at least 72 hours ago. Run the query once at the start of the scan.

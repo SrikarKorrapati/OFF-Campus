@@ -17,6 +17,13 @@ The SQLite `applications` table stores two kinds of rows. Both timestamps use IS
 
 ## Tracker tools
 
+When a chat's tool list omits the tracker, run these commands from the project root. The first lists the live MCP tools and their arguments. The second calls one through the same server.
+
+```sh
+.venv/bin/python -m job_tracker.cli mcp
+echo '{"sql_query":"SELECT count(*) AS tracked_rows FROM applications"}' | .venv/bin/python -m job_tracker.cli mcp applications_sql
+```
+
 The local MCP server exposes four tools. Each SQL tool accepts one statement, an optional list of parameters for `?` placeholders, and returns `columns` and `rows`. Writes also return `affected`. Use SELECT (including WITH ... SELECT), INSERT, UPDATE or DELETE on the tool’s table. For an explicitly requested deletion, pass `cleanup=true` and identify the records in the WHERE clause. Routine scans leave cleanup off. Read back a row after a write to see normalized names, generated IDs and timestamps.
 
 | Tool | Use |
