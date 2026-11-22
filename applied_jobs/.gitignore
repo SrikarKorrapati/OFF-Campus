@@ -1,5 +1,5 @@
 applications.sqlite3
-*.pending.json
+*.sqlite3.*.json
 applications.sqlite3-shm
 applications.sqlite3-wal
 *.pre-migration-*.sqlite3

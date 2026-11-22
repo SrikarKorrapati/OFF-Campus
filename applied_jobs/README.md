@@ -27,14 +27,3 @@ python3 -m venv .venv
 Keep identity, education, experience, skills, and project details in `docs/candidate_profile.md`. Keep availability and compensation preferences in `docs/job_requirements.md`. Pass a configured chat model to `build_question_graph` in [question_graph.py](../question_graph.py).
 
 To migrate a split profile, move the contents of `personal_details.md` and `technical_details.md` into the candidate profile under `## Personal Details` and `## Technical Details`. The loader uses each old file until its corresponding heading is present.
-
-## Apply to one Lever opening
-
-Choose an eligible opening and set `OPENAI_MODEL` and `OPENAI_API_KEY` in the environment. From the project root, install Chromium once and run the application in a visible browser.
-
-```sh
-.venv/bin/python -m playwright install chromium
-.venv/bin/python apply_job.py "$JOB_URL" --source "$DISCOVERY_URL" --resume "$RESUME_PATH"
-```
-
-`--resume-text` accepts a plain-text copy for the answer agent. A portal receipt or an opening-specific Lever confirmation found through the signed-in `gws` CLI marks the application applied. If the outcome is unclear, rerunning the same URL checks for the receipt again. The private `*.pending.json` file beside the tracker holds the submitted answers until confirmation.
