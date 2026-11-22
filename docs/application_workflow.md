@@ -16,7 +16,7 @@ WhatsApp runs once in its own session after the job boards. Its agent visits eve
 
 ## Apply
 
-The job subagent opens its own tab, verifies the opening and requisition ID on the employer's site, and checks eligibility. Only the worker that wins the atomic `claim_job` fills the form. It uses the candidate profile for identity fields and the writer–critic graph for the remaining questions. It submits once, records the submitted answers and outcome in the tracker, and checks Gmail for confirmation. Uncertain submissions need reconciliation before a retry. [Job agent instructions](../.codex/agents/job_application.toml)
+The job subagent opens its own tab, verifies the opening and requisition ID on the employer's site, and checks eligibility. It calls the internal Python function `claim_job` to reserve the opening. The worker that wins the claim fills identity fields from the candidate profile and calls `answer_page` for questions that need the writer and critic. It submits once, checks for confirmation on the portal and in Gmail, and saves the answers and outcome with `record_job_outcome`. Uncertain submissions need reconciliation before a retry. [Job agent instructions](../.codex/agents/job_application.toml)
 
 ## Saving progress
 

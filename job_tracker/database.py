@@ -266,7 +266,7 @@ def table_sql(table: str, sql_query: str, parameters: list[SQLValue] | tuple = (
 
 
 def read_applications(sql_query: str, parameters: list[SQLValue] | tuple = ()) -> dict[str, Any]:
-    """Read history for the question agent and the CLI."""
+    """Read application history for the question writer and the reporting interfaces."""
     return table_sql("applications", sql_query, parameters, read_only=True)
 
 

@@ -17,14 +17,50 @@ from langgraph.graph import START, StateGraph, add_messages
 from langgraph.types import Command
 from openai import OpenAIError
 from pydantic import SecretStr
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
 
 from job_tracker.database import read_applications
-from job_tracker.tool_definitions import TOOL_DEFINITIONS, PageAnswers, PortalField
 
 
 DOCS = Path(__file__).resolve().parent / "docs"
 MAX_ANSWER_ATTEMPTS = 3
+
+
+_HISTORY_TOOL = {
+    "name": "applications_sql",
+    "description": (
+        "Read application history with one SELECT or WITH ... SELECT against "
+        "applications(company_name, career_page_url, last_checked_at, application_id, job_id, "
+        "job_name, job_link, source_portal_url, applied_at, questions_answers_json, status, "
+        "status_notes_json). Use company_name = normalize_name(?) to match an employer. "
+        "A NULL job_id identifies the employer row. Confirmed jobs have status 'applied'. "
+        "Prior answers are stored as a JSON array of question/answer objects."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "sql_query": {"type": "string", "description": "One read-only SQL query."},
+            "parameters": {
+                "type": "array", "description": "Values for ? placeholders, or an empty list.",
+                "items": {"anyOf": [{"type": "string"}, {"type": "number"}, {"type": "null"}]},
+            },
+        },
+        "required": ["sql_query", "parameters"],
+        "additionalProperties": False,
+    },
+}
+
+
+class PortalField(TypedDict):
+    question: str
+    allowed_options: NotRequired[list[str]]
+    allow_multiple: NotRequired[bool]
+    max_length: NotRequired[int]
+
+
+class PageAnswers(TypedDict):
+    answers: dict[str, str]
+    needs_input: dict[str, str]
 
 
 class ApplicationContext(TypedDict, total=False):
@@ -128,7 +164,7 @@ def _check_answer(field: PortalField, draft: str, review: Any) -> tuple[str | No
 def build_question_graph(model: BaseChatModel):
     """Build once per application. Each invocation returns approved answers and unresolved reasons by field ID."""
     json_mode = {"type": "json_object"}
-    writer = model.bind_tools(TOOL_DEFINITIONS, strict=True).bind(response_format=json_mode)
+    writer = model.bind_tools([_HISTORY_TOOL], strict=True).bind(response_format=json_mode)
     critic = model.bind(response_format=json_mode)
 
     def start(state: PageQuestions) -> Command[Literal["write", "__end__"]]:
@@ -215,7 +251,7 @@ def _configured_graph():
 
 
 async def answer_page(page: PageQuestions) -> PageAnswers:
-    """Run a fresh field batch on the MCP server's shared, stateless graph."""
+    """Draft and review one page of fields using the configured model."""
     try:
         return await _configured_graph().ainvoke(page)
     except OpenAIError as error:

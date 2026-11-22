@@ -6,11 +6,9 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from mcp.shared.memory import create_connected_server_and_client_session
 from pydantic import SecretStr
 
-from application_questions import _configured_graph, build_question_graph, fill_question_page
-from job_tracker.mcp_server import server
+from application_questions import _configured_graph, answer_page, build_question_graph, fill_question_page
 
 
 def reply(data):
@@ -143,8 +141,8 @@ class QuestionBatchTest(unittest.TestCase):
         self.assertIn("about", result["needs_input"])
 
 
-class QuestionToolTest(unittest.IsolatedAsyncioTestCase):
-    async def test_mcp_workers_receive_reviewed_answers_by_id(self):
+class AnswerPageTest(unittest.IsolatedAsyncioTestCase):
+    async def test_workers_receive_reviewed_answers_by_id(self):
         _configured_graph.cache_clear()
         self.addCleanup(_configured_graph.cache_clear)
         with tempfile.TemporaryDirectory() as directory:
@@ -159,11 +157,10 @@ class QuestionToolTest(unittest.IsolatedAsyncioTestCase):
                 model.bind.return_value.invoke.return_value = approvals("why")
                 batch = {"company": "Example", "job_id": "123", "job_description": "Engineer",
                          "fields": {"why": {"question": "Why?", "max_length": 20}}}
-                async with create_connected_server_and_client_session(server) as client:
-                    result = await client.call_tool("answer_application_fields", batch)
-                    self.assertEqual(result.structuredContent, {"answers": {"why": "Relevant project"}, "needs_input": {}})
-                    empty = await client.call_tool("answer_application_fields", {**batch, "fields": {}})
-                    self.assertEqual(empty.structuredContent, {"answers": {}, "needs_input": {}})
+                result = await answer_page(batch)
+                self.assertEqual(result, {"answers": {"why": "Relevant project"}, "needs_input": {}})
+                empty = await answer_page({**batch, "fields": {}})
+                self.assertEqual(empty, {"answers": {}, "needs_input": {}})
                 factory.assert_called_once_with(model="worker-model", api_key=SecretStr("test-key"))
 
 

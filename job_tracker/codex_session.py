@@ -112,6 +112,7 @@ async def run_codex_session(
             "--output-schema", str(schema_path),
             "--json", "--output-last-message", str(result_path),
             "-c", "developer_instructions=" + json.dumps(instructions, ensure_ascii=False),
+            "-c", "mcp_servers.job_tracker.enabled=false",
         ]
 
         # The child inherits the signed-in Codex configuration and desktop browser route.

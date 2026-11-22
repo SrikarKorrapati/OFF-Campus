@@ -15,37 +15,17 @@ The SQLite `applications` table stores two kinds of rows. Both timestamps use IS
 | Company | Start with the normalized `company_name`, the known `career_page_url`, and status `not_checked`. Completing a full careers-page scan sets `last_checked_at` and status `checked`. |
 | Job attempt | `company_name` and `job_id` identify the opening. Keep the job title, listing URL, discovery source (the employer’s careers URL, a job-board URL or `WhatsApp`), questions, and answers. A confirmed submission gets status `applied` and a submission time in `applied_at`. A failed attempt gets `failed_to_apply` and no submission time. |
 
-## Tracker tools
-
-When a chat's tool list omits the tracker, run these commands from the project root. The first lists the live MCP tools and their arguments. The second calls one through the same server.
-
-```sh
-.venv/bin/python -m job_tracker.cli mcp
-echo '{"sql_query":"SELECT count(*) AS tracked_rows FROM applications"}' | .venv/bin/python -m job_tracker.cli mcp applications_sql
-```
-
-Each SQL tool accepts one statement, an optional list of parameters for `?` placeholders, and returns `columns` and `rows`. Writes also return `affected`. Use SELECT (including WITH ... SELECT), INSERT, UPDATE or DELETE on the tool’s table. For an explicitly requested deletion, pass `cleanup=true` and identify the records in the WHERE clause. Routine scans leave cleanup off. Read back a row after a write to see normalized names, generated IDs and timestamps.
-
-| Tool | Use |
-| --- | --- |
-| `applications_sql` | Look up employers and applications, register careers pages, and update outcomes. The question writer receives a read-only version of this tool. |
-| `job_portals_sql` | Read the discovery sources and update each completed scan’s UTC start time. |
-| `whatsapp_channels_sql` | Read and update each followed channel’s checkpoint. |
-| `claim_job(company_name, job_id)` | Atomically reserve a new or previously failed opening. Proceed only when `claimed` is true. |
-| `record_job_outcome` | Save the job details, Q&A and outcome for a claimed opening. |
-| `answer_application_fields` | Draft and review a page of questions. Returns approved answers and missing facts by field ID. |
-
-The [daily scan](daily_scan.py) uses the [source functions](scan_sources.py) to select work and update checkpoints. The [project configuration](../.codex/config.toml) launches the server, which creates or upgrades the tracker on startup. To start it from another stdio client, run `.venv/bin/python -m job_tracker.mcp_server` in the project root.
-
 ## Local application history
 
-The CLI keeps three read-only shortcuts. Run `.venv/bin/python -m job_tracker.cli` followed by one of the commands below.
+The MCP server and CLI call the same three read-only [history functions](history.py) against the local SQLite tracker. The daily application workflow calls its own internal Python functions directly.
 
-| Command | Result |
-| --- | --- |
-| `recent 24` | Distinct employers with confirmed submissions in the last 24 hours, most recent first. |
-| `applied "Sarvam AI"` | Whether any submission to the employer was confirmed. |
-| `status "Sarvam AI"` | The employer’s careers-page status and recorded applications. |
+| MCP tool | CLI example | Result |
+| --- | --- | --- |
+| `list_recently_applied_companies(hours)` | `recent 24` | Distinct employers with confirmed submissions in the requested time window, most recent first. |
+| `has_applied_to_company(company_name)` | `applied "Sarvam AI"` | True if any submission to that employer was confirmed. |
+| `get_company_status(company_name)` | `status "Sarvam AI"` | Whether the employer is known, its careers-page scan status if tracked, and the status and details of each recorded job attempt. |
+
+Run the CLI from the project root, for example `.venv/bin/python -m job_tracker.cli recent 24`. It prints JSON. To connect a local MCP client, have it launch `.venv/bin/python -m job_tracker.mcp_server` from the same directory over stdio. [Codex client configuration](../.codex/config.toml)
 
 ## Question workflow
 
@@ -56,7 +36,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-Keep identity, education, experience, skills, and project details in the [candidate profile](../docs/candidate_profile.md). Keep availability and compensation preferences in [job requirements](../docs/job_requirements.md). The question tool reads `OPENAI_API_KEY` from the environment or the project’s local `.env`. Set `OPENAI_MODEL` to override its default `gpt-4.1-mini`. Python callers can also pass a configured model to `build_question_graph` in [application_questions.py](../application_questions.py).
+Keep identity, education, experience, skills, and project details in the [candidate profile](../docs/candidate_profile.md). Keep availability and compensation preferences in [job requirements](../docs/job_requirements.md). The question graph reads `OPENAI_API_KEY` from the environment or the project’s local `.env`. Set `OPENAI_MODEL` to override its default `gpt-4.1-mini`. Python callers can also pass a configured model to `build_question_graph` in [application_questions.py](../application_questions.py).
 
 Build the graph once per application and invoke it with fresh fields for each page or conditional section. Use a stable control name or a section-and-label key for each ID so it still identifies the field after the page changes.
 

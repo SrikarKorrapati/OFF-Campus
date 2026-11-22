@@ -23,9 +23,9 @@ class CodexSessionTest(unittest.IsolatedAsyncioTestCase):
             task = json.load(sys.stdin)
             result = Path(args[args.index("--output-last-message") + 1])
             schema = json.loads(Path(args[args.index("--output-schema") + 1]).read_text())
-            setting, value = args[args.index("-c") + 1].split("=", 1)
-            assert setting == "developer_instructions"
-            instructions = json.loads(value)
+            settings = dict(args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "-c")
+            instructions = json.loads(settings["developer_instructions"])
+            assert settings["mcp_servers.job_tracker.enabled"] == "false"
             assert args[0] == "exec" and args[-1] == "-"
             assert args[args.index("--sandbox") + 1] == "workspace-write"
             assert args[args.index("--enable") + 1] == "multi_agent"
