@@ -2,7 +2,7 @@
 
 ## Shortlist employers
 
-Add each employer once to the [shortlist CSV](company_seed.csv). Select private-sector teams that build their own products, infrastructure, or technology. Exclude services-led consultancies, outsourced engineering or staffing companies, and government or public-sector undertakings.
+Keep the shortlist in `applied_jobs/company_seed.csv` on your machine. Git ignores seed CSVs. Add each employer once. Select private-sector teams that build their own products, infrastructure, or technology. Exclude services-led consultancies, outsourced engineering or staffing companies, and government or public-sector undertakings.
 
 | Employer | Evidence to record |
 | --- | --- |
@@ -26,6 +26,13 @@ Use `query_the_schema(sql_query)` for history. Filter by `status = 'applied'` to
 The first write to a legacy database saves a full backup, including legacy portal names, alongside it as `applications.sqlite3.pre-migration-*.sqlite3`.
 
 ## Question workflow
+
+Run these commands from the project root with Python 3.10 or newer.
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
 
 Keep identity, education, experience, skills, and project details in `docs/candidate_profile.md`. Keep availability and compensation preferences in `docs/job_requirements.md`. Pass a configured chat model to `build_question_graph` in [question_graph.py](../question_graph.py).
 
