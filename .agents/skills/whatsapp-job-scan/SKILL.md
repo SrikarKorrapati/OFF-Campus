@@ -10,4 +10,4 @@ description: Find job links in followed WhatsApp Web channels since their last s
 3. Hand each distinct job URL to a job child through the [existing portal workflow](../../../docs/job_sources.md#run-the-portals-in-codex), preserving the user's search or application mode. Pass the literal `WhatsApp` as `source_portal_url`. The verified opening URL belongs in `job_link`. The child handles eligibility, verification and duplicate checks.
 4. In application mode, once the interval is covered and every job child has finished with an outcome that completes the portal workflow (or there were no links), run `python3 .agents/skills/whatsapp-job-scan/scripts/checkpoint.py complete "$channel_id" "$scan_start"`. Keep the previous cutoff on a search-only run or when history, a handoff or an application is incomplete. Continue with other channels and report any left incomplete.
 
-The helper keeps the local channel-ID-to-UTC-time mapping in `job_tracker/whatsapp_scan/last_checked.json`.
+The helper stores each channel’s UTC scan start in `whatsapp_channels(channel_id, last_checked_at)` in `job_tracker/applications.sqlite3`.

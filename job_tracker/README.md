@@ -4,6 +4,8 @@ Employer shortlist criteria and registration instructions are in `docs/applicati
 
 If you have an older checkout, stop any tracker processes and move your local files from `applied_jobs/` into `job_tracker/` before running the tracker. Keep the SQLite database with its sidecar files, move `whatsapp_scan/` if present, and rename `company_seed.csv` to `company_shortlist.csv`.
 
+On upgrade, the tracker imports any existing `whatsapp_scan/last_checked.json` entries into `whatsapp_channels(channel_id, last_checked_at)`. Future channel scans use this table.
+
 ## Application records
 
 The SQLite `applications` table stores two kinds of rows. Both timestamps use ISO 8601 UTC.

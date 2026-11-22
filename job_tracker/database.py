@@ -6,18 +6,23 @@ import json
 import re
 import sqlite3
 from contextlib import closing, contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 DIRECTORY = Path(__file__).resolve().parent
 DATABASE = DIRECTORY / "applications.sqlite3"
 SCHEMA = DIRECTORY / "schema.sql"
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 UTC_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+SAVE_CHANNEL_CHECKPOINT = """
+    INSERT INTO whatsapp_channels (channel_id, last_checked_at) VALUES (?, ?)
+    ON CONFLICT (channel_id) DO UPDATE
+    SET last_checked_at = max(last_checked_at, excluded.last_checked_at)
+"""
 
 
-def _ensure_schema(connection: sqlite3.Connection) -> None:
+def _ensure_schema(connection: sqlite3.Connection, database: Path) -> None:
     version = connection.execute("PRAGMA user_version").fetchone()[0]
     if version == SCHEMA_VERSION:
         return
@@ -25,7 +30,7 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         # SQLite requires rebuilding the table to extend its status CHECK.
         connection.execute("ALTER TABLE applications RENAME TO applications_v4")
         connection.execute("DROP INDEX IF EXISTS applications_company_portal_unique")
-    elif version not in (0, 5) or (
+    elif version not in (0, 5, 6) or (
         version == 0 and connection.execute("SELECT 1 FROM sqlite_schema WHERE type = 'table'").fetchone()
     ):
         raise ValueError(f"Unsupported tracker schema version {version}. Expected {SCHEMA_VERSION}.")
@@ -38,6 +43,10 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             f"INSERT INTO applications (rowid, {columns}) SELECT rowid, {columns} FROM applications_v4"
         )
         connection.execute("DROP TABLE applications_v4")
+    legacy = database.parent / "whatsapp_scan" / "last_checked.json"
+    if legacy.is_file():
+        checkpoints = json.loads(legacy.read_text(encoding="utf-8"))
+        connection.executemany(SAVE_CHANNEL_CHECKPOINT, checkpoints.items())
     connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
@@ -58,7 +67,7 @@ def _write(database: Path):
     database.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute("BEGIN IMMEDIATE")
-        _ensure_schema(connection)
+        _ensure_schema(connection, database)
         yield connection
 
 
@@ -70,6 +79,19 @@ def initialize(database: Path = DATABASE) -> Path:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime(UTC_FORMAT)
+
+
+def whatsapp_channel_checkpoint(
+    channel_id: str, started: datetime, *, complete: bool = False, database: Path = DATABASE
+) -> str:
+    """Return the channel's UTC cutoff, saving the scan start only on completion."""
+    with _write(database) as connection:
+        if complete:
+            connection.execute(SAVE_CHANNEL_CHECKPOINT, (channel_id, started.strftime(UTC_FORMAT)))
+        row = connection.execute(
+            "SELECT last_checked_at FROM whatsapp_channels WHERE channel_id = ?", (channel_id,)
+        ).fetchone()
+    return row[0] if row else (started - timedelta(days=14)).strftime(UTC_FORMAT)
 
 
 def record_job_portal_scan(portal_id: int, scan_started_at: str, *, database: Path = DATABASE) -> str:
@@ -280,6 +302,7 @@ TOOL_DEFINITIONS = [
             "Run one read-only SQLite query and return the columns and rows. "
             "job_portals(id, name, last_accessed_at) lists discovery portals and their last "
             "successful scan starts in UTC. A NULL timestamp means the portal has never been scanned. "
+            "whatsapp_channels(channel_id, last_checked_at) stores the UTC start of each channel's last completed scan. "
             "CREATE TABLE applications (company_name TEXT, career_page_url TEXT, last_checked_at TEXT, "
             "application_id INTEGER, job_id TEXT, job_name TEXT, job_link TEXT, source_portal_url TEXT, "
             "applied_at TEXT, questions_answers_json TEXT, status TEXT, status_notes_json TEXT). "

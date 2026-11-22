@@ -1,34 +1,12 @@
 """Read or advance a followed WhatsApp channel's UTC scan checkpoint."""
 
 import argparse
-from datetime import datetime, timedelta
-import fcntl
-import json
+from datetime import datetime
 from pathlib import Path
+import sys
 
-STATE = Path(__file__).resolve().parents[4] / "job_tracker/whatsapp_scan/last_checked.json"
-UTC_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
-
-
-def load(path: Path) -> dict[str, str]:
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-
-
-def checkpoint(path: Path, action: str, channel: str, started: datetime) -> str:
-    if action == "since":
-        return load(path).get(channel, (started - timedelta(days=14)).strftime(UTC_FORMAT))
-
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    # A separate lock survives replacing the JSON file and is released if the worker exits.
-    with path.with_suffix(".lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        state = load(path)
-        stamp = max(started.strftime(UTC_FORMAT), state.get(channel, ""))
-        state[channel] = stamp
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        temporary.replace(path)
-        return stamp
+sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+from job_tracker.database import UTC_FORMAT, whatsapp_channel_checkpoint
 
 
 if __name__ == "__main__":
@@ -40,4 +18,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if not args.channel.strip():
         parser.error("Provide a channel identifier.")
-    print(checkpoint(STATE, args.action, args.channel, args.started))
+    print(whatsapp_channel_checkpoint(args.channel, args.started, complete=args.action == "complete"))

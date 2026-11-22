@@ -32,3 +32,8 @@ INSERT INTO job_portals (name) VALUES
     ('DevsUnite'), ('Internshala'), ('Freshersworld'),
     ('LinkedIn'), ('Naukri'), ('Indeed'), ('Foundit'), ('Shine'), ('WhatsApp')
 ON CONFLICT (name) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS whatsapp_channels (
+    channel_id TEXT NOT NULL PRIMARY KEY,
+    last_checked_at TEXT NOT NULL
+);
