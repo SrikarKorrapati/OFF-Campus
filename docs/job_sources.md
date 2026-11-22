@@ -31,13 +31,4 @@ Search for India-based openings and filter by posting date where available. Use 
 
 ## Channels
 
-[WhatsApp Web](https://web.whatsapp.com/) · Assign one portal agent to the [WhatsApp channel scan skill](../.agents/skills/whatsapp-job-scan/SKILL.md). It discovers job links across all followed channels in the signed-in profile.
-
-## Run the portals in Codex
-
-The daily automation applies to new openings that match the [job requirements](job_requirements.md). Use the connected browser profile. Each worker opens its own tab. An explicit search-only run returns verified openings and leaves the application checkpoints unchanged.
-
-1. **Start the scan.** From `job_tracker.database`, call `initialize()` and read `SELECT id, name, last_accessed_at FROM job_portals ORDER BY id` with `query_the_schema`. Capture one UTC start time with `date -u +%Y-%m-%dT%H:%M:%SZ`. Start one worker per portal, passing its row, source link, run mode and start time. Queue workers when all slots are in use.
-2. **Find new openings.** On each job board, cover postings from its saved time (inclusive) to the run start (exclusive). For a NULL time, use the fixed start date in the daily automation so a missed first run still catches up. Include overlapping date labels and check dates on the employer's site when needed. If the posting date cannot be placed in the window using either site, report it for follow-up. WhatsApp uses the channel checkpoints in its linked skill.
-3. **Apply in parallel.** Start a job worker for each match while the portal worker continues searching. Pass the listing URL and discovery source (the job board URL or `WhatsApp`). Verify eligibility and the requisition ID on the employer’s site. In application mode, only the worker that wins `claim_job(company_name, job_id)` fills, submits and records the outcome using the [application workflow](application_workflow.md).
-4. **Save progress.** Wait for the portal’s job workers. On a complete application scan, call `record_job_portal_scan(portal_id, scan_started_at)` with the original start time, even for zero matches. A scan is complete when every candidate was applied to, already applied to, closed or ruled ineligible. Leave the old time on blocked, partial or unresolved work so the next run can retry. Reconcile any interrupted submission against the employer portal or confirmation email before retrying it. Report applications and outstanding work by portal.
+[WhatsApp Web](https://web.whatsapp.com/) · [Channel scan skill](../.agents/skills/whatsapp-job-scan/SKILL.md)
