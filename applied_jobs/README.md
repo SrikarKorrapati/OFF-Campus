@@ -13,7 +13,7 @@ The SQLite `applications` table stores two kinds of rows. Both timestamps use IS
 
 Use `query_the_schema(sql_query)` for history. Filter by `status = 'applied'` to count submissions. `save_application` defaults to `applied`. For a failed attempt, pass `status="failed_to_apply"` and a reason such as `status_notes=["Portal closed before submission."]`. The `status_notes_json` column holds up to five concise, single-line bullets. Notes are optional for a confirmed submission and can include a confirmation reference or next step.
 
-The tracker creates the table on first write and uses schema version 4.
+Application workers use `WORKER_TOOL_DEFINITIONS` and `WORKER_TOOL_HANDLERS` from [the tracker](store.py). Call `claim_job(company_name, job_id)` before opening the application tab. Only the worker that receives `claimed: true` proceeds. Later calls return `claimed: false` for an opening that is `in_progress` or `applied`. A `failed_to_apply` opening can be claimed again. Use `query_the_schema` for status checks.
 
 ## Question workflow
 

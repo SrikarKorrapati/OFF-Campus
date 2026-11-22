@@ -13,24 +13,29 @@ from typing import Any
 DIRECTORY = Path(__file__).resolve().parent
 DATABASE = DIRECTORY / "applications.sqlite3"
 SCHEMA = DIRECTORY / "schema.sql"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
-def initialize(database: Path = DATABASE) -> Path:
-    """Create an empty tracker or use an existing tracker with the current schema."""
-    database.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(database)) as connection, connection:
-        version, has_tables = connection.execute(
-            "SELECT user_version, EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table') "
-            "FROM pragma_user_version"
-        ).fetchone()
-        if version == SCHEMA_VERSION:
-            return database
-        if version or has_tables:
-            raise ValueError(f"Unsupported tracker schema version {version}. Expected {SCHEMA_VERSION}.")
-        schema = SCHEMA.read_text(encoding="utf-8")
-        connection.executescript(f"BEGIN IMMEDIATE;\n{schema}\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;")
-    return database
+def _ensure_schema(connection: sqlite3.Connection) -> None:
+    version = connection.execute("PRAGMA user_version").fetchone()[0]
+    if version == SCHEMA_VERSION:
+        return
+    if version == 4:
+        # SQLite requires rebuilding the table to extend its status CHECK.
+        connection.execute("ALTER TABLE applications RENAME TO applications_v4")
+        connection.execute("DROP INDEX IF EXISTS applications_company_portal_unique")
+    elif version or connection.execute("SELECT 1 FROM sqlite_schema WHERE type = 'table'").fetchone():
+        raise ValueError(f"Unsupported tracker schema version {version}. Expected {SCHEMA_VERSION}.")
+
+    for statement in SCHEMA.read_text(encoding="utf-8").split(";"):
+        connection.execute(statement)
+    if version == 4:
+        columns = ", ".join(row[1] for row in connection.execute("PRAGMA table_info(applications)"))
+        connection.execute(
+            f"INSERT INTO applications (rowid, {columns}) SELECT rowid, {columns} FROM applications_v4"
+        )
+        connection.execute("DROP TABLE applications_v4")
+    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 @contextmanager
@@ -47,10 +52,17 @@ def _read_history(database: Path):
 
 @contextmanager
 def _write(database: Path):
-    initialize(database)
+    database.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute("BEGIN IMMEDIATE")
+        _ensure_schema(connection)
         yield connection
+
+
+def initialize(database: Path = DATABASE) -> Path:
+    """Create or upgrade the tracker in a single transaction."""
+    with _write(database):
+        return database
 
 
 def _utc_now() -> str:
@@ -124,6 +136,27 @@ def record_company_portal_check(
         if result.rowcount == 0:
             raise ValueError("Add the company's careers page before recording a check")
     return checked_at
+
+
+def claim_job(company_name: str, job_id: str, *, database: Path = DATABASE) -> dict[str, bool | str]:
+    """Claim a new or previously failed opening for one application worker."""
+    key = (normalize_name(company_name), job_id.strip())
+    if not all(key):
+        raise ValueError("company_name and job_id are required")
+
+    with _write(database) as connection:
+        result = connection.execute("""
+            INSERT INTO applications (application_id, company_name, job_id, status)
+            VALUES ((SELECT coalesce(max(application_id), 0) + 1 FROM applications), ?, ?, 'in_progress')
+            ON CONFLICT (company_name, job_id) DO UPDATE SET status = 'in_progress'
+            WHERE applications.status = 'failed_to_apply'
+        """, key)
+        if result.rowcount:
+            return {"claimed": True, "status": "in_progress"}
+        status, = connection.execute(
+            "SELECT status FROM applications WHERE company_name = ? AND job_id = ?", key
+        ).fetchone()
+        return {"claimed": False, "status": status}
 
 
 def save_application(
@@ -233,7 +266,8 @@ TOOL_DEFINITIONS = [
             "application_id INTEGER, job_id TEXT, job_name TEXT, job_link TEXT, source_portal_url TEXT, "
             "applied_at TEXT, questions_answers_json TEXT, status TEXT, status_notes_json TEXT). "
             "Company rows have NULL job_id and status 'not_checked' or 'checked'. "
-            "Job attempts are keyed by company_name and job_id. Count confirmed submissions with "
+            "Job attempts are keyed by company_name and job_id. A claimed opening is 'in_progress'. "
+            "Count confirmed submissions with "
             "status = 'applied'. A failed attempt is 'failed_to_apply'. Names are uppercase with "
             "underscores. Timestamps are ISO 8601 UTC. career_page_url is the employer's portal, "
             "job_link is the opening, and source_portal_url is where it was found. "
@@ -258,6 +292,26 @@ TOOL_DEFINITIONS = [
 ]
 
 TOOL_HANDLERS = {"query_the_schema": query_the_schema}
+
+# Application workers claim openings. The per-field answer agent only needs history.
+WORKER_TOOL_DEFINITIONS = [*TOOL_DEFINITIONS, {
+    "name": "claim_job",
+    "description": (
+        "Call once per opening before starting its application. Returns claimed=true only to the worker "
+        "that acquired it. If false, skip the opening: status is in_progress or applied. "
+        "Previously failed openings may be claimed again. Use query_the_schema for later status checks."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "company_name": {"type": "string", "description": "Employer name as listed on the opening."},
+            "job_id": {"type": "string", "description": "The employer's requisition ID for this opening."},
+        },
+        "required": ["company_name", "job_id"],
+        "additionalProperties": False,
+    },
+}]
+WORKER_TOOL_HANDLERS = {**TOOL_HANDLERS, "claim_job": claim_job}
 
 
 if __name__ == "__main__":

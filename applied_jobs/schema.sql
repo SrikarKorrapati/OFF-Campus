@@ -1,4 +1,4 @@
--- A NULL job_id identifies a company portal. Job rows record application outcomes.
+-- A NULL job_id identifies a company portal. Job rows track individual openings.
 CREATE TABLE IF NOT EXISTS applications (
     company_name TEXT NOT NULL,
     career_page_url TEXT,
@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS applications (
     questions_answers_json TEXT
         CHECK (questions_answers_json IS NULL OR json_valid(questions_answers_json)),
     status TEXT NOT NULL DEFAULT 'not_checked'
-        CHECK (status IN ('not_checked', 'checked', 'applied', 'failed_to_apply')),
+        CHECK (status IN ('not_checked', 'checked', 'in_progress', 'applied', 'failed_to_apply')),
     status_notes_json TEXT NOT NULL DEFAULT '[]',
     CHECK ((job_id IS NULL) = (status IN ('not_checked', 'checked'))),
     UNIQUE (company_name, job_id)
