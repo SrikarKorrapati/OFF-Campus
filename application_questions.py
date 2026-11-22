@@ -13,7 +13,8 @@ from langgraph.graph import START, StateGraph, add_messages
 from langgraph.types import Command
 from typing_extensions import NotRequired, TypedDict
 
-from job_tracker.database import TOOL_DEFINITIONS, TOOL_HANDLERS
+from job_tracker.database import TOOL_HANDLERS
+from job_tracker.tool_definitions import TOOL_DEFINITIONS
 
 
 DOCS = Path(__file__).resolve().parent / "docs"
