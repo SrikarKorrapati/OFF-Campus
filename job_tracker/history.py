@@ -3,7 +3,7 @@
 from math import isfinite
 from typing import Any
 
-from .database import normalize_name, query_the_schema
+from .database import normalize_name, read_applications
 
 
 def _company_name(value: str) -> str:
@@ -20,7 +20,7 @@ def list_recently_applied_companies(hours: float) -> list[str]:
     """
     if not isfinite(hours) or hours <= 0:
         raise ValueError("Hours must be a positive, finite number.")
-    result = query_the_schema("""
+    result = read_applications("""
         SELECT company_name FROM applications
         WHERE job_id IS NOT NULL AND status = 'applied'
           AND (strftime('%s', 'now') - strftime('%s', applied_at)) BETWEEN 0 AND ? * 3600
@@ -35,7 +35,7 @@ def has_applied_to_company(company_name: str) -> bool:
 
     A shortlist entry, an in-progress form or a failed attempt alone returns false.
     """
-    result = query_the_schema("""
+    result = read_applications("""
         SELECT 1 FROM applications
         WHERE company_name = ? AND job_id IS NOT NULL AND status = 'applied' LIMIT 1
     """, parameters=(_company_name(company_name),))
@@ -49,7 +49,7 @@ def get_company_status(company_name: str) -> dict[str, Any]:
     status, submission time). An unknown company returns found=false and an empty job list.
     """
     name = _company_name(company_name)
-    rows = query_the_schema("""
+    rows = read_applications("""
         SELECT career_page_url, last_checked_at, job_id, job_name, job_link, status, applied_at
         FROM applications WHERE company_name = ?
         ORDER BY applied_at DESC, job_id

@@ -83,11 +83,11 @@ class QuestionBatchTest(unittest.TestCase):
 
     def test_history_lookup_and_fresh_invocations(self):
         self.writer.invoke.side_effect = [
-            AIMessage(content="", tool_calls=[{"name": "query_the_schema", "args": {"sql_query": "SELECT 1"}, "id": "lookup"}]),
+            AIMessage(content="", tool_calls=[{"name": "applications_sql", "args": {"sql_query": "SELECT ?", "parameters": [1]}, "id": "lookup"}]),
             reply({"past": "Confirmed"}), reply({"new": "Different"}),
         ]
         self.critic.invoke.side_effect = [approvals("past"), approvals("new")]
-        with patch.dict("application_questions.TOOL_HANDLERS", {"query_the_schema": Mock(return_value={"rows": [1]})}):
+        with patch("application_questions.read_applications", return_value={"rows": [1]}):
             self.assertEqual(self.graph.invoke({"fields": {"past": {"question": "Past answer?"}}})["answers"],
                              {"past": "Confirmed"})
         self.assertIn('"rows": [1]', request_data(self.critic.invoke.call_args)["history"][0])

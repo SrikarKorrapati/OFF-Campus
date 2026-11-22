@@ -6,19 +6,15 @@ import json
 import re
 import sqlite3
 from contextlib import closing, contextmanager
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-
-# Preserve package imports for workers that get their tool schemas from database.
-if __package__:
-    from .tool_definitions import TOOL_DEFINITIONS, WORKER_TOOL_DEFINITIONS
 
 DIRECTORY = Path(__file__).resolve().parent
 DATABASE = DIRECTORY / "applications.sqlite3"
 SCHEMA = DIRECTORY / "schema.sql"
 SCHEMA_VERSION = 7
-UTC_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+SQLValue = str | int | float | None
+CHECKPOINTS = {"job_portals": "last_accessed_at", "whatsapp_channels": "last_checked_at"}
 SAVE_CHANNEL_CHECKPOINT = """
     INSERT INTO whatsapp_channels (channel_id, last_checked_at) VALUES (?, ?)
     ON CONFLICT (channel_id) DO UPDATE
@@ -81,88 +77,9 @@ def initialize(database: Path = DATABASE) -> Path:
         return database
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).strftime(UTC_FORMAT)
-
-
-def whatsapp_channel_checkpoint(
-    channel_id: str, started: datetime, *, complete: bool = False, database: Path = DATABASE
-) -> str:
-    """Return the channel's UTC cutoff, saving the scan start only on completion."""
-    with _write(database) as connection:
-        if complete:
-            connection.execute(SAVE_CHANNEL_CHECKPOINT, (channel_id, started.strftime(UTC_FORMAT)))
-        row = connection.execute(
-            "SELECT last_checked_at FROM whatsapp_channels WHERE channel_id = ?", (channel_id,)
-        ).fetchone()
-    return row[0] if row else (started - timedelta(days=14)).strftime(UTC_FORMAT)
-
-
-def record_job_portal_scan(portal_id: int, scan_started_at: str, *, database: Path = DATABASE) -> str:
-    """Record a completed scan's UTC start and return the latest saved timestamp."""
-    started = datetime.strptime(scan_started_at, UTC_FORMAT).strftime(UTC_FORMAT)
-    with _write(database) as connection:
-        row = connection.execute("""
-            UPDATE job_portals SET last_accessed_at = max(coalesce(last_accessed_at, ''), ?)
-            WHERE id = ? RETURNING last_accessed_at
-        """, (started, portal_id)).fetchone()
-        if row is None:
-            raise ValueError(f"Unknown job portal ID: {portal_id}")
-        return row[0]
-
-
 def normalize_name(name: str) -> str:
     """Store company and job names in uppercase with underscores between words."""
     return "_".join(name.split()).upper()
-
-
-def add_company_portal(
-    company_name: str, career_page_url: str | None = None, *, database: Path = DATABASE
-) -> None:
-    """Register an employer. A new or changed careers URL starts unchecked."""
-    company_name = normalize_name(company_name)
-    career_page_url = (career_page_url or "").strip() or None
-    if not company_name:
-        raise ValueError("company_name is required")
-    if career_page_url and not career_page_url.startswith(("https://", "http://")):
-        raise ValueError("career_page_url must be an HTTP or HTTPS URL")
-
-    with _write(database) as connection:
-        connection.execute(
-            """
-            INSERT INTO applications (company_name, career_page_url) VALUES (?, ?)
-            ON CONFLICT (company_name) WHERE job_id IS NULL DO UPDATE SET
-                career_page_url = excluded.career_page_url,
-                last_checked_at = NULL, status = 'not_checked', status_notes_json = '[]'
-            WHERE excluded.career_page_url IS NOT NULL
-              AND excluded.career_page_url IS NOT applications.career_page_url
-            """,
-            (company_name, career_page_url),
-        )
-
-
-def record_company_portal_check(
-    company_name: str, *, status_notes: list[str] | None = None, database: Path = DATABASE
-) -> str:
-    """Mark a careers portal checked and optionally record notes about the check."""
-    company_name = normalize_name(company_name)
-    if not company_name:
-        raise ValueError("company_name is required")
-    encoded_notes = None if status_notes is None else json.dumps(status_notes, ensure_ascii=False)
-    checked_at = _utc_now()
-    with _write(database) as connection:
-        result = connection.execute(
-            """
-            UPDATE applications
-            SET last_checked_at = ?, status = 'checked',
-                status_notes_json = COALESCE(?, CASE WHEN status = 'checked' THEN status_notes_json ELSE '[]' END)
-            WHERE company_name = ? AND job_id IS NULL AND career_page_url IS NOT NULL
-            """,
-            (checked_at, encoded_notes, company_name),
-        )
-        if result.rowcount == 0:
-            raise ValueError("Add the company's careers page before recording a check")
-    return checked_at
 
 
 def claim_job(company_name: str, job_id: str, *, database: Path = DATABASE) -> dict[str, bool | str]:
@@ -186,103 +103,164 @@ def claim_job(company_name: str, job_id: str, *, database: Path = DATABASE) -> d
         return {"claimed": False, "status": status}
 
 
-def save_application(
-    company_name: str,
-    job_id: str,
-    questions_answers: list[dict[str, Any]],
-    *,
-    job_name: str,
-    job_link: str,
-    source_portal_url: str,
-    status: str = "applied",
-    status_notes: list[str] | None = None,
-    database: Path = DATABASE,
-) -> int:
-    """Record a confirmed submission or a failed attempt for a specific opening."""
-    company_name = normalize_name(company_name)
-    job_id = job_id.strip()
-    job_name = normalize_name(job_name)
-    job_link = job_link.strip()
-    source_portal_url = source_portal_url.strip()
-    if not all((company_name, job_id, job_name, job_link, source_portal_url)):
-        raise ValueError(
-            "company_name, job_id, job_name, job_link, and source_portal_url are required"
-        )
-    if not isinstance(questions_answers, list):
-        raise TypeError("questions_answers must be a list")
-    if any(
-        not isinstance(item, dict) or "question" not in item or "answer" not in item
-        for item in questions_answers
-    ):
-        raise ValueError("Each item must contain question and answer fields")
-
-    if status not in ("applied", "failed_to_apply"):
-        raise ValueError("Job status must be applied or failed_to_apply")
-    values = {
-        "company": company_name, "job_id": job_id, "name": job_name, "link": job_link,
-        "source": source_portal_url, "answers": json.dumps(questions_answers, ensure_ascii=False),
-        "status": status,
-        "notes": json.dumps([] if status_notes is None else status_notes, ensure_ascii=False),
-        "applied_at": _utc_now() if status == "applied" else None,
-    }
-    with _write(database) as connection:
-        previous = connection.execute(
-            "SELECT application_id, status, applied_at, status_notes_json FROM applications "
-            "WHERE company_name = :company AND job_id = :job_id", values,
-        ).fetchone()
-        if previous is None:
-            return connection.execute("""
-                INSERT INTO applications (application_id, company_name, job_id, job_name, job_link,
-                    source_portal_url, questions_answers_json, status, status_notes_json, applied_at)
-                VALUES ((SELECT coalesce(max(application_id), 0) + 1 FROM applications),
-                    :company, :job_id, :name, :link, :source, :answers, :status, :notes, :applied_at)
-                RETURNING application_id
-            """, values).fetchone()[0]
-
-        application_id, old_status, submitted_at, old_notes = previous
-        if old_status == "applied":
-            if status == "failed_to_apply":
-                raise ValueError("This application is already confirmed and cannot be marked failed")
-            values["applied_at"] = submitted_at
-        if status == old_status and status_notes is None:
-            values["notes"] = old_notes
-        connection.execute("""
-            UPDATE applications SET job_name = :name, job_link = :link, source_portal_url = :source,
-                questions_answers_json = :answers, status = :status, status_notes_json = :notes,
-                applied_at = :applied_at WHERE company_name = :company AND job_id = :job_id
-        """, values)
-        return application_id
+def _valid_list(value: str | None, answers: bool) -> bool:
+    try:
+        items = json.loads(value) if value is not None else None
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(items, list):
+        return False
+    if answers:
+        return all(isinstance(item, dict) and "question" in item and "answer" in item for item in items)
+    return all(isinstance(item, str) for item in items)
 
 
-def query_the_schema(
-    sql_query: str, *, parameters: tuple[Any, ...] = (), database: Path = DATABASE
-) -> dict[str, Any]:
-    """Run one read-only SQLite query and return its columns and result rows."""
+def _write_rules(db: sqlite3.Connection, table: str) -> None:
+    """Install rules only on this tool connection. Existing SQLite files need no migration."""
+    db.execute("PRAGMA recursive_triggers = ON")
+    # REPLACE may implicitly delete an existing record. Require an explicit cleanup DELETE.
+    db.execute(f"""CREATE TEMP TRIGGER protect_delete BEFORE DELETE ON {table}
+        BEGIN SELECT RAISE(ABORT, 'Use a cleanup DELETE to remove a record'); END""")
+    if table in CHECKPOINTS:
+        stamp = CHECKPOINTS[table]
+        for event in ("INSERT", "UPDATE"):
+            db.execute(f"""CREATE TEMP TRIGGER valid_{event} BEFORE {event} ON {table}
+                WHEN NEW.{stamp} IS NOT strftime('%Y-%m-%dT%H:%M:%SZ', NEW.{stamp}, '+0 seconds')
+                BEGIN SELECT RAISE(ABORT, 'Use a UTC timestamp in YYYY-MM-DDTHH:MM:SSZ format'); END""")
+        db.execute(f"""CREATE TEMP TRIGGER keep_checkpoint BEFORE UPDATE ON {table}
+            WHEN OLD.{stamp} IS NOT NULL AND (NEW.{stamp} IS NULL OR NEW.{stamp} < OLD.{stamp})
+            BEGIN SELECT RAISE(ABORT, 'A scan checkpoint cannot move backward'); END""")
+        return
+
+    db.create_function("valid_list", 2, _valid_list)
+    for event in ("INSERT", "UPDATE"):
+        db.execute(f"""CREATE TEMP TRIGGER check_{event} BEFORE {event} ON applications BEGIN
+            SELECT CASE
+              WHEN normalize_name(NEW.company_name) = '' OR trim(NEW.job_id) = ''
+                THEN RAISE(ABORT, 'Provide a company name and a nonblank requisition ID')
+              WHEN NEW.career_page_url IS NOT NULL AND NOT
+                (NEW.career_page_url LIKE 'https://%' OR NEW.career_page_url LIKE 'http://%')
+                THEN RAISE(ABORT, 'Provide an HTTP(S) careers URL')
+              WHEN NEW.status = 'checked' AND (NEW.career_page_url IS NULL OR NEW.last_checked_at IS NULL)
+                THEN RAISE(ABORT, 'A completed company scan needs its URL and timestamp')
+              WHEN NEW.last_checked_at IS NOT strftime('%Y-%m-%dT%H:%M:%SZ', NEW.last_checked_at, '+0 seconds')
+                OR NEW.applied_at IS NOT strftime('%Y-%m-%dT%H:%M:%SZ', NEW.applied_at, '+0 seconds')
+                THEN RAISE(ABORT, 'Use UTC timestamps in YYYY-MM-DDTHH:MM:SSZ format')
+              WHEN (NEW.questions_answers_json IS NOT NULL AND NOT valid_list(NEW.questions_answers_json, 1))
+                OR NOT valid_list(NEW.status_notes_json, 0) THEN RAISE(ABORT, 'Invalid Q&A or status notes')
+              WHEN NEW.status IN ('applied', 'failed_to_apply') AND
+                (coalesce(normalize_name(NEW.job_name),'') = '' OR coalesce(trim(NEW.job_link),'') = ''
+                 OR coalesce(trim(NEW.source_portal_url),'') = '' OR NEW.questions_answers_json IS NULL)
+                THEN RAISE(ABORT, 'Save the job title, link, source and Q&A with the outcome')
+              WHEN NEW.status != 'applied' AND NEW.applied_at IS NOT NULL
+                THEN RAISE(ABORT, 'Only confirmed applications have a submission timestamp')
+            END; END""")
+        db.execute(f"""CREATE TEMP TRIGGER normalize_{event} AFTER {event} ON applications
+            WHEN NEW.company_name IS NOT normalize_name(NEW.company_name)
+              OR NEW.job_name IS NOT normalize_name(NEW.job_name)
+              OR NEW.job_id IS NOT trim(NEW.job_id)
+              OR (NEW.job_id IS NOT NULL AND NEW.application_id IS NULL)
+              OR (NEW.status = 'applied' AND NEW.applied_at IS NULL)
+            BEGIN UPDATE applications SET company_name = normalize_name(NEW.company_name),
+                job_name = normalize_name(NEW.job_name), job_id = trim(NEW.job_id),
+                application_id = CASE WHEN NEW.job_id IS NOT NULL THEN coalesce(NEW.application_id,
+                    (SELECT coalesce(max(application_id), 0) + 1 FROM applications)) END,
+                applied_at = CASE WHEN NEW.status = 'applied' THEN coalesce(NEW.applied_at,
+                    strftime('%Y-%m-%dT%H:%M:%SZ','now')) END
+                WHERE rowid = NEW.rowid;
+                SELECT CASE WHEN EXISTS (SELECT 1 FROM applications WHERE rowid = NEW.rowid
+                    AND (company_name IS NOT normalize_name(company_name)
+                         OR job_name IS NOT normalize_name(job_name) OR job_id IS NOT trim(job_id)))
+                    THEN RAISE(ABORT, 'Use normalize_name(?) for conflicting company names') END; END""")
+    db.execute("""CREATE TEMP TRIGGER protect_history BEFORE UPDATE ON applications BEGIN
+        SELECT CASE
+          WHEN OLD.status = 'applied' AND (NEW.status != 'applied'
+               OR normalize_name(NEW.company_name) IS NOT normalize_name(OLD.company_name)
+               OR trim(NEW.job_id) IS NOT trim(OLD.job_id) OR
+               (OLD.applied_at IS NOT NULL AND NEW.applied_at IS NOT OLD.applied_at))
+            THEN RAISE(ABORT, 'Preserve the confirmed status and submission timestamp')
+          WHEN OLD.job_id IS NULL AND NEW.career_page_url IS OLD.career_page_url
+            AND OLD.last_checked_at IS NOT NULL AND
+            (NEW.last_checked_at IS NULL OR NEW.last_checked_at < OLD.last_checked_at)
+            THEN RAISE(ABORT, 'A scan checkpoint cannot move backward')
+          WHEN NEW.job_id IS NULL AND NEW.career_page_url IS NOT OLD.career_page_url
+            AND (NEW.status != 'not_checked' OR NEW.last_checked_at IS NOT NULL)
+            THEN RAISE(ABORT, 'Reset status and last_checked_at when changing the careers URL')
+        END; END""")
+
+
+# SQL submitted to the tracker can use ordinary reporting functions and JSON values.
+_SQL_FUNCTIONS = frozenset("""
+    abs avg char coalesce concat count date datetime format glob group_concat hex ifnull iif
+    instr julianday length like likelihood likely lower ltrim max min normalize_name nullif
+    printf quote replace round rtrim sign strftime substr substring sum time total trim
+    typeof unicode unixepoch unlikely upper valid_list
+    json json_array json_array_length json_extract json_insert json_object json_patch json_quote
+    json_remove json_replace json_set json_type json_valid json_group_array json_group_object -> ->>
+    row_number rank dense_rank lag lead first_value last_value total_changes changes
+""".split())
+
+
+def table_sql(table: str, sql_query: str, parameters: list[SQLValue] | tuple = (), *,
+              read_only: bool = False, cleanup: bool = False, database: Path = DATABASE) -> dict[str, Any]:
+    """Execute one bound statement on one tracker table."""
+    if table != "applications" and table not in CHECKPOINTS:
+        raise ValueError("Unknown tracker table")
     if not isinstance(sql_query, str):
-        raise TypeError("sql_query must be a string")
-    sql_query = sql_query.strip()
-    if not re.match(r"^(SELECT|WITH|PRAGMA|EXPLAIN)\b", sql_query, re.IGNORECASE):
-        raise ValueError("sql_query must be one read-only SELECT, WITH, PRAGMA, or EXPLAIN query")
+        raise ValueError("sql_query must be a string")
+    match = re.match(r"\s*(SELECT|WITH|INSERT|UPDATE|DELETE)\b", sql_query, re.IGNORECASE)
+    if not match:
+        raise ValueError("Use one SELECT, WITH ... SELECT, INSERT, UPDATE, or DELETE")
+    verb = match[1].upper()
+    reading = verb in ("SELECT", "WITH")
+    if read_only and not reading:
+        raise ValueError("The question agent can only read application history")
+    if (verb == "DELETE") != cleanup:
+        raise ValueError("Use cleanup=true only for an explicitly requested DELETE")
+
+    def authorize(action, name, column, schema, source):
+        if action in (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_RECURSIVE):
+            return sqlite3.SQLITE_OK
+        if action == sqlite3.SQLITE_FUNCTION and column in _SQL_FUNCTIONS:
+            return sqlite3.SQLITE_OK
+        if action == sqlite3.SQLITE_READ and name in ("json_each", "json_tree"):
+            return sqlite3.SQLITE_OK
+        if name == table and schema in ("main", None):
+            if action == sqlite3.SQLITE_READ:
+                return sqlite3.SQLITE_OK
+            if not reading and action in (sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE) and not cleanup:
+                return sqlite3.SQLITE_OK
+            if cleanup and action == sqlite3.SQLITE_DELETE:
+                return sqlite3.SQLITE_OK
+        return sqlite3.SQLITE_DENY
 
     try:
-        with _read_history(database) as connection:
-            cursor = connection.execute(sql_query, parameters)
-            if cursor.description is None:
-                raise ValueError("sql_query must return rows")
-            columns = [column[0] for column in cursor.description]
-            records = cursor.fetchall()
+        with (_read_history(database) if reading else _write(database)) as db:
+            db.create_function("normalize_name", 1, lambda name: None if name is None else normalize_name(name),
+                               deterministic=True)
+            # Prepare SQLite's JSON table functions before restricting schema access.
+            db.execute("SELECT 1 FROM json_each('[]'), json_tree('[]') LIMIT 0")
+            if not reading and not cleanup:
+                _write_rules(db, table)
+            db.set_authorizer(authorize)
+            try:
+                cursor = db.execute(sql_query, parameters)
+                columns = [field[0] for field in cursor.description or ()]
+                rows = [{key: value.hex() if isinstance(value, bytes) else value
+                         for key, value in zip(columns, row)} for row in cursor]
+                result: dict[str, Any] = {"columns": columns, "rows": rows}
+                if not reading:
+                    result["affected"] = cursor.rowcount
+                return result
+            finally:
+                db.set_authorizer(None)
     except sqlite3.Error as error:
-        raise ValueError(f"SQL query failed: {error}") from error
-
-    rows = [
-        {key: value.hex() if isinstance(value, bytes) else value for key, value in zip(columns, record)}
-        for record in records
-    ]
-    return {"columns": columns, "rows": rows}
+        raise ValueError(f"{table}: {error}") from error
 
 
-TOOL_HANDLERS = {"query_the_schema": query_the_schema}
-WORKER_TOOL_HANDLERS = {**TOOL_HANDLERS, "claim_job": claim_job}
+def read_applications(sql_query: str, parameters: list[SQLValue] | tuple = ()) -> dict[str, Any]:
+    """Read history for the question agent and the CLI."""
+    return table_sql("applications", sql_query, parameters, read_only=True)
 
 
 if __name__ == "__main__":

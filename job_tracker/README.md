@@ -1,6 +1,6 @@
 # Company shortlist and application tracker
 
-Use the [employer shortlist criteria](../docs/job_requirements.md#shortlist-employers) to select and register employers.
+Select employers using the [job requirements](../docs/job_requirements.md).
 
 If you have an older checkout, stop any tracker processes and move your local files from `applied_jobs/` into `job_tracker/` before running the tracker. Keep the SQLite database with its sidecar files, move `whatsapp_scan/` if present, and rename `company_seed.csv` to `company_shortlist.csv`.
 
@@ -15,21 +15,28 @@ The SQLite `applications` table stores two kinds of rows. Both timestamps use IS
 | Company | Start with the normalized `company_name`, the known `career_page_url`, and status `not_checked`. Completing a full careers-page scan sets `last_checked_at` and status `checked`. |
 | Job attempt | `company_name` and `job_id` identify the opening. Keep the job title, listing URL, discovery source (the employer’s careers URL, a job-board URL or `WhatsApp`), questions, and answers. A confirmed submission gets status `applied` and a submission time in `applied_at`. A failed attempt gets `failed_to_apply` and no submission time. |
 
-Use `query_the_schema(sql_query)` for history. Filter by `status = 'applied'` to count submissions. `save_application` defaults to `applied`. For a failed attempt, pass `status="failed_to_apply"`. The tracker stores the agent's `status_notes` as JSON.
+## Tracker tools
 
-Application workers use `WORKER_TOOL_DEFINITIONS` from [tool_definitions.py](tool_definitions.py) and `WORKER_TOOL_HANDLERS` from [database.py](database.py). Call `claim_job(company_name, job_id)` before opening the application tab. Only the worker that receives `claimed: true` proceeds. Later calls return `claimed: false` for an opening that is `in_progress` or `applied`. A `failed_to_apply` opening can be claimed again. Use `query_the_schema` for status checks.
+The local MCP server exposes four tools. Each SQL tool accepts one statement, an optional list of parameters for `?` placeholders, and returns `columns` and `rows`. Writes also return `affected`. Use SELECT (including WITH ... SELECT), INSERT, UPDATE or DELETE on the tool’s table. For an explicitly requested deletion, pass `cleanup=true` and identify the records in the WHERE clause. Routine scans leave cleanup off. Read back a row after a write to see normalized names, generated IDs and timestamps.
+
+| Tool | Use |
+| --- | --- |
+| `applications_sql` | Look up employers and applications, register careers pages, and update outcomes. The question writer receives a read-only version of this tool. |
+| `job_portals_sql` | Read the discovery sources and update each completed scan’s UTC start time. |
+| `whatsapp_channels_sql` | Read and update each followed channel’s checkpoint. |
+| `claim_job(company_name, job_id)` | Atomically reserve a new or previously failed opening. Proceed only when `claimed` is true. |
+
+The [application workflow](../docs/application_workflow.md#company-updates) contains the routine updates. The [project configuration](../.codex/config.toml) launches the server, which creates or upgrades the tracker on startup. To start it from another stdio client, run `.venv/bin/python -m job_tracker.mcp_server` in the project root.
 
 ## Local application history
 
-The CLI and MCP server run the same three read-only queries against `job_tracker/applications.sqlite3`. From the project root, run `.venv/bin/python -m job_tracker.cli` followed by one of these commands. The CLI prints JSON.
+The CLI keeps three read-only shortcuts. Run `.venv/bin/python -m job_tracker.cli` followed by one of the commands below.
 
-| CLI command | MCP tool | Result |
-| --- | --- | --- |
-| `recent 24` | `list_recently_applied_companies(hours)` | Distinct employers with confirmed submissions in the last 24 hours, most recent first. Fractional hours are supported. |
-| `applied "Sarvam AI"` | `has_applied_to_company(company_name)` | True if any submission to that employer was confirmed. |
-| `status "Sarvam AI"` | `get_company_status(company_name)` | Careers-page scan status and each job’s application status, link and submission time. An unknown employer returns `found: false`. |
-
-Install the dependencies with `.venv/bin/python -m pip install -r requirements.txt`. The [Codex project configuration](../.codex/config.toml) registers the local server. Other stdio clients can launch `.venv/bin/python -m job_tracker.mcp_server` with the project root as the working directory.
+| Command | Result |
+| --- | --- |
+| `recent 24` | Distinct employers with confirmed submissions in the last 24 hours, most recent first. |
+| `applied "Sarvam AI"` | Whether any submission to the employer was confirmed. |
+| `status "Sarvam AI"` | The employer’s careers-page status and recorded applications. |
 
 ## Question workflow
 
